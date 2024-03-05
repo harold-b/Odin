@@ -529,7 +529,7 @@ gb_internal void thread_init(ThreadPool *pool, Thread *t, isize idx) {
 	t->posix_handle = 0;
 #endif
 
-	t->capacity = 1 << 14; // must be a power of 2
+	t->capacity = 1 << 16; // must be a power of 2
 	t->queue = gb_alloc_array(heap_allocator(), WorkerTask, t->capacity);
 	t->head_and_tail = 0;
 	t->pool = pool;

@@ -270,7 +270,7 @@ gb_internal bool check_builtin_objc_procedure(CheckerContext *c, Operand *operan
 			return_type = nullptr;
 		} else {
 			gbString e = expr_to_string(rt.expr);
-			error(rt.expr, "'%.*s' expected a type or nil to define the return type of the Objective-C call, got %s", LIT(builtin_name), e);
+			error(ce->proc, "'%.*s' expected a type or nil to define the return type of the Objective-C call, got %s", LIT(builtin_name), e);
 			gb_string_free(e);
 			return false;
 		}

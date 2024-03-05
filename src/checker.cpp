@@ -313,6 +313,7 @@ gb_internal void add_scope(CheckerContext *c, Ast *node, Scope *scope) {
 	case Ast_StructType:      node->StructType.scope      = scope; break;
 	case Ast_UnionType:       node->UnionType.scope       = scope; break;
 	case Ast_EnumType:        node->EnumType.scope        = scope; break;
+	case Ast_BitFieldType:    node->BitFieldType.scope    = scope; break;
 	default: GB_PANIC("Invalid node for add_scope: %.*s", LIT(ast_strings[node->kind]));
 	}
 }
@@ -334,6 +335,7 @@ gb_internal Scope *scope_of_node(Ast *node) {
 	case Ast_StructType:      return node->StructType.scope;
 	case Ast_UnionType:       return node->UnionType.scope;
 	case Ast_EnumType:        return node->EnumType.scope;
+	case Ast_BitFieldType:    return node->BitFieldType.scope;
 	}
 	GB_PANIC("Invalid node for add_scope: %.*s", LIT(ast_strings[node->kind]));
 	return nullptr;
@@ -355,6 +357,7 @@ gb_internal void check_open_scope(CheckerContext *c, Ast *node) {
 	case Ast_EnumType:
 	case Ast_UnionType:
 	case Ast_BitSetType:
+	case Ast_BitFieldType:
 		scope->flags |= ScopeFlag_Type;
 		break;
 	}
@@ -1257,6 +1260,9 @@ gb_internal void init_checker_info(CheckerInfo *i) {
 	mpsc_init(&i->required_global_variable_queue, a); // 1<<10);
 	mpsc_init(&i->required_foreign_imports_through_force_queue, a); // 1<<10);
 	mpsc_init(&i->intrinsics_entry_point_usage, a); // 1<<10); // just waste some memory here, even if it probably never used
+
+	string_map_init(&i->load_directory_cache);
+	map_init(&i->load_directory_map);
 }
 
 gb_internal void destroy_checker_info(CheckerInfo *i) {
@@ -1280,6 +1286,8 @@ gb_internal void destroy_checker_info(CheckerInfo *i) {
 
 	map_destroy(&i->objc_msgSend_types);
 	string_map_destroy(&i->load_file_cache);
+	string_map_destroy(&i->load_directory_cache);
+	map_destroy(&i->load_directory_map);
 }
 
 gb_internal CheckerContext make_checker_context(Checker *c) {
@@ -2055,6 +2063,12 @@ gb_internal void add_type_info_type_internal(CheckerContext *c, Type *t) {
 		add_type_info_type_internal(c, bt->SoaPointer.elem);
 		break;
 
+	case Type_BitField:
+		add_type_info_type_internal(c, bt->BitField.backing_type);
+		for (Entity *f : bt->BitField.fields) {
+			add_type_info_type_internal(c, f->type);
+		}
+		break;
 
 	case Type_Generic:
 		break;
@@ -2302,6 +2316,13 @@ gb_internal void add_min_dep_type_info(Checker *c, Type *t) {
 
 	case Type_SoaPointer:
 		add_min_dep_type_info(c, bt->SoaPointer.elem);
+		break;
+
+	case Type_BitField:
+		add_min_dep_type_info(c, bt->BitField.backing_type);
+		for (Entity *f : bt->BitField.fields) {
+			add_min_dep_type_info(c, f->type);
+		}
 		break;
 
 	default:
@@ -2902,6 +2923,7 @@ gb_internal void init_core_type_info(Checker *c) {
 	t_type_info_relative_multi_pointer = find_core_type(c, str_lit("Type_Info_Relative_Multi_Pointer"));
 	t_type_info_matrix           = find_core_type(c, str_lit("Type_Info_Matrix"));
 	t_type_info_soa_pointer      = find_core_type(c, str_lit("Type_Info_Soa_Pointer"));
+	t_type_info_bit_field        = find_core_type(c, str_lit("Type_Info_Bit_Field"));
 
 	t_type_info_named_ptr            = alloc_type_pointer(t_type_info_named);
 	t_type_info_integer_ptr          = alloc_type_pointer(t_type_info_integer);
@@ -2931,6 +2953,7 @@ gb_internal void init_core_type_info(Checker *c) {
 	t_type_info_relative_multi_pointer_ptr = alloc_type_pointer(t_type_info_relative_multi_pointer);
 	t_type_info_matrix_ptr           = alloc_type_pointer(t_type_info_matrix);
 	t_type_info_soa_pointer_ptr      = alloc_type_pointer(t_type_info_soa_pointer);
+	t_type_info_bit_field_ptr        = alloc_type_pointer(t_type_info_bit_field);
 }
 
 gb_internal void init_mem_allocator(Checker *c) {
@@ -2957,6 +2980,16 @@ gb_internal void init_core_source_code_location(Checker *c) {
 	t_source_code_location = find_core_type(c, str_lit("Source_Code_Location"));
 	t_source_code_location_ptr = alloc_type_pointer(t_source_code_location);
 }
+
+gb_internal void init_core_load_directory_file(Checker *c) {
+	if (t_load_directory_file != nullptr) {
+		return;
+	}
+	t_load_directory_file = find_core_type(c, str_lit("Load_Directory_File"));
+	t_load_directory_file_ptr = alloc_type_pointer(t_load_directory_file);
+	t_load_directory_file_slice = alloc_type_slice(t_load_directory_file);
+}
+
 
 gb_internal void init_core_map_type(Checker *c) {
 	if (t_map_info != nullptr) {

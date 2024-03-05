@@ -89,6 +89,8 @@ gb_internal bool does_field_type_allow_using(Type *t) {
 		return true;
 	} else if (is_type_array(t)) {
 		return t->Array.count <= 4;
+	} else if (is_type_bit_field(t)) {
+		return true;
 	}
 	return false;
 }
@@ -632,9 +634,6 @@ gb_internal void check_struct_type(CheckerContext *ctx, Type *struct_type, Ast *
 	
 	scope_reserve(ctx->scope, min_field_count);
 
-	rw_mutex_lock(&struct_type->Struct.fields_mutex);
-	defer (rw_mutex_unlock(&struct_type->Struct.fields_mutex));
-
 	if (st->is_raw_union && min_field_count > 1) {
 		struct_type->Struct.is_raw_union = true;
 		context = str_lit("struct #raw_union");
@@ -662,6 +661,7 @@ gb_internal void check_struct_type(CheckerContext *ctx, Type *struct_type, Ast *
 			gb_unused(where_clause_ok);
 		}
 		check_struct_fields(ctx, node, &struct_type->Struct.fields, &struct_type->Struct.tags, st->fields, min_field_count, struct_type, context);
+		wait_signal_set(&struct_type->Struct.fields_wait_signal);
 	}
 
 #define ST_ALIGN(_name) if (st->_name != nullptr) {                                                \
@@ -925,6 +925,202 @@ gb_internal void check_enum_type(CheckerContext *ctx, Type *enum_type, Type *nam
 
 	enum_type->Enum.min_value_index = min_value_index;
 	enum_type->Enum.max_value_index = max_value_index;
+}
+
+gb_internal bool is_valid_bit_field_backing_type(Type *type) {
+	if (type == nullptr) {
+		return false;
+	}
+	type = base_type(type);
+	if (is_type_untyped(type)) {
+		return false;
+	}
+	if (is_type_integer(type)) {
+		return true;
+	}
+	if (type->kind == Type_Array) {
+		return is_type_integer(type->Array.elem);
+	}
+	return false;
+}
+
+gb_internal void check_bit_field_type(CheckerContext *ctx, Type *bit_field_type, Type *named_type, Ast *node) {
+	ast_node(bf, BitFieldType, node);
+	GB_ASSERT(is_type_bit_field(bit_field_type));
+
+	Type *backing_type = check_type(ctx, bf->backing_type);
+	if (backing_type == nullptr || !is_valid_bit_field_backing_type(backing_type)) {
+		error(node, "Backing type for a bit_field must be an integer or an array of an integer");
+		return;
+	}
+
+	bit_field_type->BitField.backing_type = backing_type;
+	bit_field_type->BitField.scope = ctx->scope;
+
+	auto fields    = array_make<Entity *>(permanent_allocator(), 0, bf->fields.count);
+	auto bit_sizes = array_make<u8>      (permanent_allocator(), 0, bf->fields.count);
+	auto tags      = array_make<String>  (permanent_allocator(), 0, bf->fields.count);
+
+	u64 maximum_bit_size = 8 * type_size_of(backing_type);
+	u64 total_bit_size = 0;
+
+	for_array(i, bf->fields) {
+		i32 field_src_index = cast(i32)i;
+		Ast *field = bf->fields[i];
+		if (field->kind != Ast_BitFieldField) {
+			error(field, "Invalid AST for a bit_field");
+			continue;
+		}
+		ast_node(f, BitFieldField, field);
+		if (f->name == nullptr || f->name->kind != Ast_Ident) {
+			error(field, "A bit_field's field name must be an identifier");
+			continue;
+		}
+		CommentGroup *docs    = f->docs;
+		CommentGroup *comment = f->comment;
+
+		String name = f->name->Ident.token.string;
+
+		if (f->type == nullptr) {
+			error(field, "A bit_field's field must have a type");
+			continue;
+		}
+
+		Type *type = check_type(ctx, f->type);
+		if (type_size_of(type) > 8) {
+			error(f->type, "The type of a bit_field's field must be <= 8 bytes, got %lld", cast(long long)type_size_of(type));
+		}
+
+		if (is_type_untyped(type)) {
+			gbString s = type_to_string(type);
+			error(f->type, "The type of a bit_field's field must be a typed integer, enum, or boolean, got %s", s);
+			gb_string_free(s);
+		} else if (!(is_type_integer(type) || is_type_enum(type) || is_type_boolean(type))) {
+			gbString s = type_to_string(type);
+			error(f->type, "The type of a bit_field's field must be an integer, enum, or boolean, got %s", s);
+			gb_string_free(s);
+		}
+
+		if (f->bit_size == nullptr) {
+			error(field, "A bit_field's field must have a specified bit size");
+			continue;
+		}
+
+
+		Operand o = {};
+		check_expr(ctx, &o, f->bit_size);
+		if (o.mode != Addressing_Constant) {
+			error(f->bit_size, "A bit_field's specified bit size must be a constant");
+			o.mode = Addressing_Invalid;
+		}
+		if (o.value.kind == ExactValue_Float) {
+			o.value = exact_value_to_integer(o.value);
+		}
+		if (f->bit_size->kind == Ast_BinaryExpr && f->bit_size->BinaryExpr.op.kind == Token_Or) {
+			gbString s = expr_to_string(f->bit_size);
+			error(f->bit_size, "Wrap the expression in parentheses, e.g. (%s)", s);
+			gb_string_free(s);
+		}
+
+		ExactValue bit_size = o.value;
+
+		if (bit_size.kind != ExactValue_Integer) {
+			gbString s = expr_to_string(f->bit_size);
+			error(f->bit_size, "Expected an integer constant value for the specified bit size, got %s", s);
+			gb_string_free(s);
+		}
+
+		if (scope_lookup_current(ctx->scope, name) != nullptr) {
+			error(f->name, "'%.*s' is already declared in this bit_field", LIT(name));
+		} else {
+			i64 bit_size_i64 = exact_value_to_i64(bit_size);
+			u8 bit_size_u8 = 0;
+			if (bit_size_i64 <= 0) {
+				error(f->bit_size, "A bit_field's specified bit size cannot be <= 0, got %lld", cast(long long)bit_size_i64);
+				bit_size_i64 = 1;
+			}
+			if (bit_size_i64 > 64) {
+				error(f->bit_size, "A bit_field's specified bit size cannot exceed 64 bits, got %lld", cast(long long)bit_size_i64);
+				bit_size_i64 = 64;
+			}
+			i64 sz = 8*type_size_of(type);
+			if (bit_size_i64 > sz) {
+				error(f->bit_size, "A bit_field's specified bit size cannot exceed its type, got %lld, expect <=%lld", cast(long long)bit_size_i64, cast(long long)sz);
+				bit_size_i64 = sz;
+			}
+
+			bit_size_u8 = cast(u8)bit_size_i64;
+
+			Entity *e = alloc_entity_field(ctx->scope, f->name->Ident.token, type, false, field_src_index);
+			e->Variable.docs    = docs;
+			e->Variable.comment = comment;
+			e->Variable.bit_field_bit_size = bit_size_u8;
+			e->flags |= EntityFlag_BitFieldField;
+
+			add_entity(ctx, ctx->scope, nullptr, e);
+			array_add(&fields, e);
+			array_add(&bit_sizes, bit_size_u8);
+
+			String tag = f->tag.string;
+			if (tag.len != 0 && !unquote_string(permanent_allocator(), &tag, 0, tag.text[0] == '`')) {
+				error(f->tag, "Invalid string literal");
+				tag = {};
+			}
+			array_add(&tags, tag);
+
+			add_entity_use(ctx, field, e);
+		}
+	}
+
+	GB_ASSERT(fields.count <= bf->fields.count);
+
+	auto bit_offsets = slice_make<i64>(permanent_allocator(), fields.count);
+	i64 curr_offset = 0;
+	for_array(i, bit_sizes) {
+		bit_offsets[i] = curr_offset;
+		curr_offset += cast(i64)bit_sizes[i];
+	}
+
+	if (total_bit_size > maximum_bit_size) {
+		gbString s = type_to_string(backing_type);
+		error(node, "The numbers required %llu exceeds the backing type's (%s) bit size %llu",
+		      cast(unsigned long long)total_bit_size,
+		      s,
+		      cast(unsigned long long)maximum_bit_size);
+		gb_string_free(s);
+	}
+
+	if (bit_sizes.count > 0 && is_type_integer(backing_type)) {
+		bool all_booleans = is_type_boolean(fields[0]->type);
+		bool all_ones = bit_sizes[0] == 1;
+		if (all_ones && all_booleans) {
+			for_array(i, bit_sizes) {
+				all_ones = bit_sizes[i] == 1;
+				if (!all_ones) {
+					break;
+				}
+				all_booleans = is_type_boolean(fields[i]->type);
+				if (!all_booleans) {
+					break;
+				}
+			}
+			if (all_ones && all_booleans) {
+				if (build_context.vet_flags & VetFlag_Style) {
+					char const *msg = "This 'bit_field' is better expressed as a 'bit_set' since all of the fields are booleans, of 1-bit in size, and the backing type is an integer (-vet-style)";
+					error(node, msg);
+				} else {
+					char const *msg = "This 'bit_field' might be better expressed as a 'bit_set' since all of the fields are booleans, of 1-bit in size, and the backing type is an integer";
+					warning(node, msg);
+				}
+			}
+		}
+	}
+
+
+	bit_field_type->BitField.fields      = slice_from_array(fields);
+	bit_field_type->BitField.bit_sizes   = slice_from_array(bit_sizes);
+	bit_field_type->BitField.bit_offsets = bit_offsets;
+	bit_field_type->BitField.tags        = tags.data;
 }
 
 gb_internal bool is_type_valid_bit_set_range(Type *t) {
@@ -2255,6 +2451,34 @@ gb_internal void map_cell_size_and_len(Type *type, i64 *size_, i64 *len_) {
 	if (len_)  *len_ = len;
 }
 
+gb_internal Type *get_map_cell_type(Type *type) {
+	i64 size, len;
+	i64 elem_size = type_size_of(type);
+	map_cell_size_and_len(type, &size, &len);
+
+	if (size == len*elem_size) {
+		return type;
+	}
+
+	if (is_power_of_two(len)) {
+		return type;
+	}
+
+	i64 padding = size - len*elem_size;
+	GB_ASSERT(padding > 0);
+
+	// Padding exists
+	Type *s = alloc_type_struct();
+	Scope *scope = create_scope(nullptr, nullptr);
+	s->Struct.fields = slice_make<Entity *>(permanent_allocator(), 2);
+	s->Struct.fields[0] = alloc_entity_field(scope, make_token_ident("v"), alloc_type_array(type, len), false, 0, EntityState_Resolved);
+	s->Struct.fields[1] = alloc_entity_field(scope, make_token_ident("_"), alloc_type_array(t_u8, padding), false, 1, EntityState_Resolved);
+	s->Struct.scope = scope;
+	gb_unused(type_size_of(s));
+
+	return s;
+}
+
 gb_internal void init_map_internal_types(Type *type) {
 	GB_ASSERT(type->kind == Type_Map);
 	GB_ASSERT(t_allocator != nullptr);
@@ -2264,6 +2488,43 @@ gb_internal void init_map_internal_types(Type *type) {
 	Type *value = type->Map.value;
 	GB_ASSERT(key != nullptr);
 	GB_ASSERT(value != nullptr);
+
+
+
+	Type *key_cell   = get_map_cell_type(key);
+	Type *value_cell = get_map_cell_type(value);
+
+	Type *metadata_type = alloc_type_struct();
+	Scope *metadata_scope = create_scope(nullptr, nullptr);
+	metadata_type->Struct.fields = slice_make<Entity *>(permanent_allocator(), 5);
+	metadata_type->Struct.fields[0] = alloc_entity_field(metadata_scope, make_token_ident("key"),    key,       false, 0, EntityState_Resolved);
+	metadata_type->Struct.fields[1] = alloc_entity_field(metadata_scope, make_token_ident("value"),  value,     false, 1, EntityState_Resolved);
+	metadata_type->Struct.fields[2] = alloc_entity_field(metadata_scope, make_token_ident("hash"),   t_uintptr, false, 2, EntityState_Resolved);
+	metadata_type->Struct.fields[3] = alloc_entity_field(metadata_scope, make_token_ident("key_cell"),   key_cell,   false, 3, EntityState_Resolved);
+	metadata_type->Struct.fields[4] = alloc_entity_field(metadata_scope, make_token_ident("value_cell"), value_cell, false, 4, EntityState_Resolved);
+	metadata_type->Struct.scope = metadata_scope;
+	metadata_type->Struct.node = nullptr;
+
+	gb_unused(type_size_of(metadata_type));
+
+	// NOTE(bill): [0]^struct{key: Key, value: Value, hash: uintptr}
+	// This is a zero array to a pointer to keep the alignment to that of a pointer, and not effective the size of the final struct
+	metadata_type = alloc_type_array(alloc_type_pointer(metadata_type), 0);;
+
+
+	Scope *scope = create_scope(nullptr, nullptr);
+	Type *debug_type = alloc_type_struct();
+	debug_type->Struct.fields = slice_make<Entity *>(permanent_allocator(), 4);
+	debug_type->Struct.fields[0] = alloc_entity_field(scope, make_token_ident("data"),       t_uintptr,     false, 0, EntityState_Resolved);
+	debug_type->Struct.fields[1] = alloc_entity_field(scope, make_token_ident("len"),        t_int,         false, 1, EntityState_Resolved);
+	debug_type->Struct.fields[2] = alloc_entity_field(scope, make_token_ident("allocator"),  t_allocator,   false, 2, EntityState_Resolved);
+	debug_type->Struct.fields[3] = alloc_entity_field(scope, make_token_ident("__metadata"), metadata_type, false, 3, EntityState_Resolved);
+	debug_type->Struct.scope = scope;
+	debug_type->Struct.node = nullptr;
+
+	gb_unused(type_size_of(debug_type));
+
+	type->Map.debug_metadata_type = debug_type;
 
 	type->Map.lookup_result_type = make_optional_ok_type(value);
 }
@@ -2488,6 +2749,8 @@ gb_internal Type *make_soa_struct_internal(CheckerContext *ctx, Ast *array_typ_e
 		GB_ASSERT(is_type_struct(elem));
 
 		Type *old_struct = base_type(elem);
+
+		wait_signal_until_available(&old_struct->Struct.fields_wait_signal);
 		field_count = old_struct->Struct.fields.count;
 
 		soa_struct = alloc_type_struct();
@@ -2528,21 +2791,19 @@ gb_internal Type *make_soa_struct_internal(CheckerContext *ctx, Ast *array_typ_e
 	}
 
 	if (soa_kind != StructSoa_Fixed) {
-		Entity *len_field = alloc_entity_field(scope, empty_token, t_int, false, cast(i32)field_count+0);
+		Entity *len_field = alloc_entity_field(scope, make_token_ident("__$len"), t_int, false, cast(i32)field_count+0);
 		soa_struct->Struct.fields[field_count+0] = len_field;
 		add_entity(ctx, scope, nullptr, len_field);
 		add_entity_use(ctx, nullptr, len_field);
 
 		if (soa_kind == StructSoa_Dynamic) {
-			Entity *cap_field = alloc_entity_field(scope, empty_token, t_int, false, cast(i32)field_count+1);
+			Entity *cap_field = alloc_entity_field(scope, make_token_ident("__$cap"), t_int, false, cast(i32)field_count+1);
 			soa_struct->Struct.fields[field_count+1] = cap_field;
 			add_entity(ctx, scope, nullptr, cap_field);
 			add_entity_use(ctx, nullptr, cap_field);
 
-			Token token = {};
-			token.string = str_lit("allocator");
 			init_mem_allocator(ctx->checker);
-			Entity *allocator_field = alloc_entity_field(scope, token, t_allocator, false, cast(i32)field_count+2);
+			Entity *allocator_field = alloc_entity_field(scope, make_token_ident("allocator"), t_allocator, false, cast(i32)field_count+2);
 			soa_struct->Struct.fields[field_count+2] = allocator_field;
 			add_entity(ctx, scope, nullptr, allocator_field);
 			add_entity_use(ctx, nullptr, allocator_field);
@@ -2985,6 +3246,20 @@ gb_internal bool check_type_internal(CheckerContext *ctx, Ast *e, Type **type, T
 		*type = alloc_type_bit_set();
 		set_base_type(named_type, *type);
 		check_bit_set_type(ctx, *type, named_type, e);
+		return true;
+	case_end;
+
+	case_ast_node(bf, BitFieldType, e);
+		bool ips = ctx->in_polymorphic_specialization;
+		defer (ctx->in_polymorphic_specialization = ips);
+		ctx->in_polymorphic_specialization = false;
+
+		*type = alloc_type_bit_field();
+		set_base_type(named_type, *type);
+		check_open_scope(ctx, e);
+		check_bit_field_type(ctx, *type, named_type, e);
+		check_close_scope(ctx);
+		(*type)->BitField.node = e;
 		return true;
 	case_end;
 

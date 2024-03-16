@@ -5,7 +5,7 @@ package spall
 // Only for types.
 import "core:os"
 
-when ODIN_OS == .Darwin {
+when ODIN_OS == .Darwin && ODIN_PLATFORM_SUBTARGET == .Default {
 	foreign import libc "system:System.framework"
 } else {
 	foreign import libc "system:c"

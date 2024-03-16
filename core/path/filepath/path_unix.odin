@@ -1,7 +1,7 @@
 //+build linux, darwin, freebsd, openbsd
 package filepath
 
-when ODIN_OS == .Darwin {
+when ODIN_OS == .Darwin && ODIN_PLATFORM_SUBTARGET == .Default {
 	foreign import libc "system:System.framework"
 } else {
 	foreign import libc "system:c"

@@ -58,7 +58,12 @@ global_block_descriptor := Block_Descriptor{
 	size     = size_of(Internal_Block_Literal),
 }
 
-foreign import libSystem "system:System.framework"
+when ODIN_OS == .Darwin && ODIN_PLATFORM_SUBTARGET == .Default {
+	foreign import libSystem "system:System.framework"
+} else {
+	foreign import pthread "system:CoreFoundation.framework"
+}
+
 foreign libSystem {
 	_NSConcreteGlobalBlock: intrinsics.objc_class
 	_NSConcreteStackBlock: intrinsics.objc_class

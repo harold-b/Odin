@@ -311,8 +311,25 @@ gb_internal i32 linker_stage(LinkerData *gen) {
 
 			// NOTE(vassvik): needs to add the root to the library search paths, so that the full filenames of the library
 			//                files can be passed with -l:
-			gbString lib_str = gb_string_make(heap_allocator(), "-L/");
+			// gbString lib_str = gb_string_make(heap_allocator(), "-L/");
+			gbString lib_str = gb_string_make(heap_allocator(), "");
 			defer (gb_string_free(lib_str));
+
+			if (is_osx) {
+				lib_str = gb_string_appendc(lib_str, "");
+				if (selected_subtarget == Subtarget_iOS) {
+					lib_str = gb_string_appendc(lib_str, "-F/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk/System/Library/Frameworks/ ");
+					lib_str = gb_string_appendc(lib_str, "-L/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk/System/Library/Frameworks/ ");
+				}
+				else if (selected_subtarget == Subtarget_iPhoneSimulator) {
+					lib_str = gb_string_appendc(lib_str, "-F/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk/System/Library/Frameworks/ ");
+					lib_str = gb_string_appendc(lib_str, "-L/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk/System/Library/Frameworks/ ");
+				}
+				else {
+					GB_ASSERT(selected_subtarget == Subtarget_Default);
+					lib_str = gb_string_appendc(lib_str, "-F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks/ ");
+				}
+			}
 			
 			StringSet asm_files = {};
 			string_set_init(&asm_files, 64);
@@ -482,21 +499,34 @@ gb_internal i32 linker_stage(LinkerData *gen) {
 			gbString platform_lib_str = gb_string_make(heap_allocator(), "");
 			defer (gb_string_free(platform_lib_str));
 			if (build_context.metrics.os == TargetOs_darwin) {
-				platform_lib_str = gb_string_appendc(platform_lib_str, "-Wl,-syslibroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk -L/usr/local/lib ");
+				// platform_lib_str = gb_string_appendc(platform_lib_str, "-Wl,-syslibroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk -L/usr/local/lib ");
+				platform_lib_str = gb_string_appendc(platform_lib_str, "" );//-Wl,-syslibroot ");
 
-				// Homebrew's default library path, checking if it exists to avoid linking warnings.
-				if (gb_file_exists("/opt/homebrew/lib")) {
-					platform_lib_str = gb_string_appendc(platform_lib_str, "-L/opt/homebrew/lib ");
+				if (selected_subtarget == Subtarget_iOS) {
+					platform_lib_str = gb_string_appendc(platform_lib_str, "-target arm64-apple-ios17.0 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk -Wl,-ld_classic ");
 				}
-
-				// MacPort's default library path, checking if it exists to avoid linking warnings.
-				if (gb_file_exists("/opt/local/lib")) {
-					platform_lib_str = gb_string_appendc(platform_lib_str, "-L/opt/local/lib ");
+				else if (selected_subtarget == Subtarget_iPhoneSimulator) {
+					platform_lib_str = gb_string_appendc(platform_lib_str, "-target arm64-apple-ios17.0-simulator -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk -Wl,-ld_classic ");
 				}
+				else {
+					platform_lib_str = gb_string_appendc(platform_lib_str, "-Wl,-syslibroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk ");
 
-				// This sets a requirement of Mountain Lion and up, but the compiler doesn't work without this limit.
-				if (build_context.minimum_os_version_string.len) {
-					link_settings = gb_string_append_fmt(link_settings, "-mmacosx-version-min=%.*s ", LIT(build_context.minimum_os_version_string));
+					platform_lib_str = gb_string_appendc(platform_lib_str, "-L/usr/local/lib ");
+
+					// Homebrew's default library path, checking if it exists to avoid linking warnings.
+					if (gb_file_exists("/opt/homebrew/lib")) {
+						platform_lib_str = gb_string_appendc(platform_lib_str, "-L/opt/homebrew/lib ");
+					}
+
+					// MacPort's default library path, checking if it exists to avoid linking warnings.
+					if (gb_file_exists("/opt/local/lib")) {
+						platform_lib_str = gb_string_appendc(platform_lib_str, "-L/opt/local/lib ");
+					}
+
+					// This sets a requirement of Mountain Lion and up, but the compiler doesn't work without this limit.
+					if (build_context.minimum_os_version_string.len) {
+						link_settings = gb_string_append_fmt(link_settings, "-mmacosx-version-min=%.*s ", LIT(build_context.minimum_os_version_string));
+					}
 				}
 				// This points the linker to where the entry point is
 				link_settings = gb_string_appendc(link_settings, "-e _main ");
@@ -504,7 +534,7 @@ gb_internal i32 linker_stage(LinkerData *gen) {
 
 			if (!build_context.no_crt) {
 				platform_lib_str = gb_string_appendc(platform_lib_str, "-lm ");
-				if (build_context.metrics.os == TargetOs_darwin) {
+				if (build_context.metrics.os == TargetOs_darwin && selected_subtarget == Subtarget_Default) {
 					platform_lib_str = gb_string_appendc(platform_lib_str, "-lSystem ");
 				} else {
 					platform_lib_str = gb_string_appendc(platform_lib_str, "-lc ");

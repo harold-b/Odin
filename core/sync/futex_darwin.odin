@@ -5,7 +5,11 @@ package sync
 import "core:c"
 import "core:time"
 
-foreign import System "system:System.framework"
+when ODIN_OS == .Darwin && ODIN_PLATFORM_SUBTARGET == .Default {
+	foreign import System "system:System.framework"
+} else {
+	foreign import System "system:CoreFoundation.framework"
+}
 
 foreign System {
 	// __ulock_wait is not available on 10.15

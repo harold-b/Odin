@@ -4,7 +4,7 @@ package libc
 
 when ODIN_OS == .Windows {
 	foreign import libc "system:libucrt.lib"
-} else when ODIN_OS == .Darwin {
+} else when ODIN_OS == .Darwin && ODIN_PLATFORM_SUBTARGET == .Default {
 	foreign import libc "system:System.framework"
 } else {
 	foreign import libc "system:c"

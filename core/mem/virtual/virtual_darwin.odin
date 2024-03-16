@@ -2,7 +2,11 @@
 //+private
 package mem_virtual
 
-foreign import libc "system:System.framework"
+when ODIN_OS == .Darwin && ODIN_PLATFORM_SUBTARGET == .Default {
+	foreign import libc "system:System.framework"
+} else {
+	foreign import libc "system:c"
+}
 import "core:c"
 
 PROT_NONE  :: 0x0 /* [MC2] no permissions */

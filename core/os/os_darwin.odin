@@ -1,8 +1,16 @@
 package os
 
 foreign import dl   "system:dl"
-foreign import libc "system:System.framework"
-foreign import pthread "system:System.framework"
+when ODIN_OS == .Darwin && ODIN_PLATFORM_SUBTARGET == .Default {
+	foreign import libc "system:System.framework"
+} else {
+	foreign import libc "system:c"
+}
+when ODIN_OS == .Darwin && ODIN_PLATFORM_SUBTARGET == .Default {
+	foreign import pthread "system:System.framework"
+} else {
+	foreign import pthread "system:c"
+}
 
 import "base:runtime"
 import "core:strings"

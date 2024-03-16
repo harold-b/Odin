@@ -7,7 +7,7 @@ when ODIN_OS == .Windows {
 		"system:libucrt.lib",
 		"system:legacy_stdio_definitions.lib",
 	}
-} else when ODIN_OS == .Darwin {
+} else when ODIN_OS == .Darwin && ODIN_PLATFORM_SUBTARGET == .Default {
 	foreign import libc "system:System.framework"
 } else {
 	foreign import libc "system:c"

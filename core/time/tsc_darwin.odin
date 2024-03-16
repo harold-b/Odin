@@ -4,7 +4,12 @@ package time
 
 import "core:c"
 
-foreign import libc "system:System.framework"
+when ODIN_OS == .Darwin && ODIN_PLATFORM_SUBTARGET == .Default {
+	foreign import libc "system:System.framework"
+} else {
+	foreign import libc "system:c"
+}
+
 foreign libc {
 	@(link_name="sysctlbyname") _sysctlbyname    :: proc(path: cstring, oldp: rawptr, oldlenp: rawptr, newp: rawptr, newlen: int) -> c.int ---
 }

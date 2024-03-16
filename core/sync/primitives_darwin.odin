@@ -5,7 +5,11 @@ package sync
 import "core:c"
 import "base:intrinsics"
 
-foreign import pthread "system:System.framework"
+when ODIN_OS == .Darwin && ODIN_PLATFORM_SUBTARGET == .Default {
+	foreign import pthread "system:System.framework"
+} else {
+	foreign import pthread "system:c"
+}
 
 _current_thread_id :: proc "contextless" () -> int {
 	tid: u64

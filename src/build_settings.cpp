@@ -169,6 +169,7 @@ struct TargetMetrics {
 enum Subtarget : u32 {
 	Subtarget_Default,
 	Subtarget_iOS,
+	Subtarget_iPhoneSimulator,
 
 	Subtarget_COUNT,
 };
@@ -176,6 +177,7 @@ enum Subtarget : u32 {
 gb_global String subtarget_strings[Subtarget_COUNT] = {
 	str_lit(""),
 	str_lit("ios"),
+	str_lit("iphonesim"),
 };
 
 
@@ -1403,6 +1405,7 @@ gb_internal void init_build_context(TargetMetrics *cross_target, Subtarget subta
 	case Subtarget_Default:
 		break;
 	case Subtarget_iOS:
+	case Subtarget_iPhoneSimulator:
 		GB_ASSERT(metrics->os == TargetOs_darwin);
 		if (metrics->arch == TargetArch_arm64) {
 			bc->metrics.target_triplet = str_lit("arm64-apple-ios");

@@ -86,7 +86,11 @@ PTHREAD_CANCEL_DISABLE      :: 1
 PTHREAD_CANCEL_DEFERRED     :: 0
 PTHREAD_CANCEL_ASYNCHRONOUS :: 1
 
-foreign import pthread "system:System.framework"
+when ODIN_OS == .Darwin && ODIN_PLATFORM_SUBTARGET == .Default {
+	foreign import pthread "system:System.framework"
+} else {
+	foreign import pthread "system:c"
+}
 
 @(default_calling_convention="c")
 foreign pthread {

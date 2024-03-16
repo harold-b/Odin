@@ -8,7 +8,7 @@ import "core:odin/tokenizer"
 _ :: intrinsics
 
 new_from_positions :: proc($T: typeid, pos, end: tokenizer.Pos) -> ^T {
-	n, _ := mem.new(T)
+	n := mem.new(T) or_else fmt.panicf("Allocation error: %v", err)
 	n.pos = pos
 	n.end = end
 	n.derived = n

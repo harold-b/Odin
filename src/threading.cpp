@@ -760,15 +760,16 @@ gb_internal void futex_wait(Futex *f, Footex val) {
 
 #elif defined(GB_SYSTEM_OSX)
 
-#define UL_COMPARE_AND_WAIT	0x00000001
-#define ULF_NO_ERRNO        0x01000000
+// #define UL_COMPARE_AND_WAIT	0x00000001
+#define UL_COMPARE_AND_WAIT_SHARED 	0x00000003
+#define ULF_NO_ERRNO				0x01000000
 
 extern "C" int __ulock_wait(uint32_t operation, void *addr, uint64_t value, uint32_t timeout); /* timeout is specified in microseconds */
 extern "C" int __ulock_wake(uint32_t operation, void *addr, uint64_t wake_value);
 
 gb_internal void futex_signal(Futex *f) {
 	for (;;) {
-		int ret = __ulock_wake(UL_COMPARE_AND_WAIT | ULF_NO_ERRNO, f, 0);
+		int ret = __ulock_wake(UL_COMPARE_AND_WAIT_SHARED | ULF_NO_ERRNO, f, 0);
 		if (ret >= 0) {
 			return;
 		}
@@ -785,7 +786,7 @@ gb_internal void futex_signal(Futex *f) {
 gb_internal void futex_broadcast(Futex *f) {
 	for (;;) {
 		enum { ULF_WAKE_ALL = 0x00000100 };
-		int ret = __ulock_wake(UL_COMPARE_AND_WAIT | ULF_NO_ERRNO | ULF_WAKE_ALL, f, 0);
+		int ret = __ulock_wake(UL_COMPARE_AND_WAIT_SHARED | ULF_NO_ERRNO | ULF_WAKE_ALL, f, 0);
 		if (ret == 0) {
 			return;
 		}
@@ -801,7 +802,7 @@ gb_internal void futex_broadcast(Futex *f) {
 
 gb_internal void futex_wait(Futex *f, Footex val) {
 	for (;;) {
-		int ret = __ulock_wait(UL_COMPARE_AND_WAIT | ULF_NO_ERRNO, f, val, 0);
+		int ret = __ulock_wait(UL_COMPARE_AND_WAIT_SHARED | ULF_NO_ERRNO, f, val, 0);
 		if (ret >= 0) {
 			if (*f != val) {
 				return;

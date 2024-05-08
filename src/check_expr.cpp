@@ -102,6 +102,7 @@ gb_internal Type *   check_init_variable            (CheckerContext *c, Entity *
 gb_internal void check_assignment_error_suggestion(CheckerContext *c, Operand *o, Type *type, i64 max_bit_size=0);
 gb_internal void add_map_key_type_dependencies(CheckerContext *ctx, Type *key);
 
+gb_internal Type *make_soa_struct_fixed(CheckerContext *ctx, Ast *array_typ_expr, Ast *elem_expr, Type *elem, i64 count, Type *generic_type);
 gb_internal Type *make_soa_struct_slice(CheckerContext *ctx, Ast *array_typ_expr, Ast *elem_expr, Type *elem);
 gb_internal Type *make_soa_struct_dynamic_array(CheckerContext *ctx, Ast *array_typ_expr, Ast *elem_expr, Type *elem);
 
@@ -1409,11 +1410,16 @@ gb_internal bool is_polymorphic_type_assignable(CheckerContext *c, Type *poly, T
 			    poly->Struct.soa_kind != StructSoa_None) {
 				bool ok = is_polymorphic_type_assignable(c, poly->Struct.soa_elem, source->Struct.soa_elem, true, modify_type);
 				if (ok) switch (source->Struct.soa_kind) {
-				case StructSoa_Fixed:
+				case StructSoa_None:
 				default:
 					GB_PANIC("Unhandled SOA Kind");
 					break;
-
+				case StructSoa_Fixed:
+					if (modify_type) {
+						Type *type = make_soa_struct_fixed(c, nullptr, poly->Struct.node, poly->Struct.soa_elem, poly->Struct.soa_count, nullptr);
+						gb_memmove(poly, type, gb_size_of(*type));
+					}
+					break;
 				case StructSoa_Slice:
 					if (modify_type) {
 						Type *type = make_soa_struct_slice(c, nullptr, poly->Struct.node, poly->Struct.soa_elem);
@@ -6528,12 +6534,17 @@ gb_internal CallArgumentData check_call_arguments_proc_group(CheckerContext *c, 
 		array_add(&proc_entities, proc);
 	}
 
+	int max_matched_features = 0;
 
 	gbString expr_name = expr_to_string(operand->expr);
 	defer (gb_string_free(expr_name));
 
 	for_array(i, procs) {
 		Entity *p = procs[i];
+		if (p->flags & EntityFlag_Disabled) {
+			continue;
+		}
+
 		Type *pt = base_type(p->type);
 		if (pt != nullptr && is_type_proc(pt)) {
 			CallArgumentData data = {};
@@ -6564,8 +6575,21 @@ gb_internal CallArgumentData check_call_arguments_proc_group(CheckerContext *c, 
 				item.score += assign_score_function(1);
 			}
 
+			max_matched_features = gb_max(max_matched_features, matched_target_features(&pt->Proc));
+
 			item.index = index;
 			array_add(&valids, item);
+		}
+	}
+
+	if (max_matched_features > 0) {
+		for_array(i, valids) {
+			Entity *p = procs[valids[i].index];
+			Type *t = base_type(p->type);
+			GB_ASSERT(t->kind == Type_Proc);
+
+			int matched = matched_target_features(&t->Proc);
+			valids[i].score += assign_score_function(max_matched_features-matched);
 		}
 	}
 
@@ -6710,7 +6734,11 @@ gb_internal CallArgumentData check_call_arguments_proc_group(CheckerContext *c, 
 		ERROR_BLOCK();
 
 		error(operand->expr, "Ambiguous procedure group call '%s' that match with the given arguments", expr_name);
-		print_argument_types();
+		if (positional_operands.count == 0 && named_operands.count == 0) {
+			error_line("\tNo given arguments\n");
+		} else {
+			print_argument_types();
+		}
 
 		for (auto const &valid : valids) {
 			Entity *proc = proc_entities[valid.index];
@@ -7555,8 +7583,11 @@ gb_internal ExprKind check_call_expr(CheckerContext *c, Operand *operand, Ast *c
 		}
 	}
 
+	bool is_call_inlined = false;
+
 	switch (inlining) {
 	case ProcInlining_inline:
+		is_call_inlined = true;
 		if (proc != nullptr) {
 			Entity *e = entity_from_expr(proc);
 			if (e != nullptr && e->kind == Entity_Procedure) {
@@ -7572,6 +7603,47 @@ gb_internal ExprKind check_call_expr(CheckerContext *c, Operand *operand, Ast *c
 		break;
 	case ProcInlining_no_inline:
 		break;
+	case ProcInlining_none:
+		if (proc != nullptr) {
+			Entity *e = entity_from_expr(proc);
+			if (e != nullptr && e->kind == Entity_Procedure) {
+				DeclInfo *decl = e->decl_info;
+				if (decl->proc_lit) {
+					ast_node(pl, ProcLit, decl->proc_lit);
+					if (pl->inlining == ProcInlining_inline) {
+						is_call_inlined = true;
+					}
+				}
+			}
+		}
+	}
+
+	{
+		String invalid;
+		if (pt->kind == Type_Proc && pt->Proc.require_target_feature.len != 0) {
+			if (!check_target_feature_is_valid_for_target_arch(pt->Proc.require_target_feature, &invalid)) {
+				error(call, "Called procedure requires target feature '%.*s' which is invalid for the build target", LIT(invalid));
+			} else if (!check_target_feature_is_enabled(pt->Proc.require_target_feature, &invalid)) {
+				error(call, "Calling this procedure requires target feature '%.*s' to be enabled", LIT(invalid));
+			}
+		}
+
+		if (pt->kind == Type_Proc && pt->Proc.enable_target_feature.len != 0) {
+			if (!check_target_feature_is_valid_for_target_arch(pt->Proc.enable_target_feature, &invalid)) {
+				error(call, "Called procedure enables target feature '%.*s' which is invalid for the build target", LIT(invalid));
+			}
+
+			// NOTE: Due to restrictions in LLVM you can not inline calls with a superset of features.
+			if (is_call_inlined) {
+				GB_ASSERT(c->curr_proc_decl);
+				GB_ASSERT(c->curr_proc_decl->entity);
+				GB_ASSERT(c->curr_proc_decl->entity->type->kind == Type_Proc);
+				String scope_features = c->curr_proc_decl->entity->type->Proc.enable_target_feature;
+				if (!check_target_feature_is_superset_of(scope_features, pt->Proc.enable_target_feature, &invalid)) {
+					error(call, "Inlined procedure enables target feature '%.*s', this requires the calling procedure to at least enable the same feature", LIT(invalid));
+				}
+			}
+		}
 	}
 
 	operand->expr = call;

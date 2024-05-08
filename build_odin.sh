@@ -128,7 +128,7 @@ run_demo() {
 
 if [ $# -eq 0 ]; then
 	build_odin debug
-	run_demo
+	# run_demo
 elif [ $# -eq 1 ]; then
 	case $1 in
 	report)
@@ -139,7 +139,7 @@ elif [ $# -eq 1 ]; then
 		build_odin $1
 		;;
 	esac
-	run_demo
+	# run_demo
 else
 	error "Too many arguments!"
 fi

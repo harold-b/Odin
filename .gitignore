@@ -303,6 +303,8 @@ odin.dSYM
 *.bin
 demo.bin
 libLLVM*.so*
+libLLVM*.a
+
 
 # shared collection
 shared/

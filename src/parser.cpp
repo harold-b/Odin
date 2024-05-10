@@ -1,7 +1,7 @@
 #include "parser_pos.cpp"
 
 gb_internal u64 ast_file_vet_flags(AstFile *f) {
-	if (f->vet_flags_set) {
+	if (f != nullptr && f->vet_flags_set) {
 		return f->vet_flags;
 	}
 	return build_context.vet_flags;
@@ -3499,6 +3499,10 @@ gb_internal Ast *parse_type(AstFile *f) {
 		Token token = advance_token(f);
 		syntax_error(token, "Expected a type");
 		return ast_bad_expr(f, token, f->curr_token);
+	} else if (type->kind == Ast_ParenExpr &&
+	           unparen_expr(type) == nullptr) {
+		syntax_error(type, "Expected a type within the parentheses");
+		return ast_bad_expr(f, type->ParenExpr.open, type->ParenExpr.close);
 	}
 	return type;
 }
@@ -3879,10 +3883,12 @@ gb_internal Ast *parse_proc_type(AstFile *f, Token proc_token) {
 
 
 	expect_token(f, Token_OpenParen);
+	f->expr_level += 1;
 	params = parse_field_list(f, nullptr, FieldFlag_Signature, Token_CloseParen, true, true);
 	if (file_allow_newline(f)) {
 		skip_possible_newline(f);
 	}
+	f->expr_level -= 1;
 	expect_token_after(f, Token_CloseParen, "parameter list");
 	results = parse_results(f, &diverging);
 
@@ -5710,7 +5716,7 @@ gb_internal bool determine_path_from_string(BlockingMutex *file_mutex, Ast *node
 		//                 working directory of the exe to the library search paths.
 		//                 Static libraries can be linked directly with the full pathname
 		//
-		if (node->kind == Ast_ForeignImportDecl && string_ends_with(file_str, str_lit(".so"))) {
+		if (node->kind == Ast_ForeignImportDecl && (string_ends_with(file_str, str_lit(".so")) || string_contains_string(file_str, str_lit(".so.")))) {
 			*path = file_str;
 			return true;
 		}

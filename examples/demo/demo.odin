@@ -48,7 +48,7 @@ the_basics :: proc() {
 		// os.args holds the path to the current executable and any arguments passed to it.
 		if len(os.args) == 1 {
 			fmt.printf("Hellope from %v.\n", os.args[0])
-		} else {
+		} else if len(os.args) > 2 {
 			fmt.printf("%v, %v! from %v.\n", os.args[1], os.args[2], os.args[0])
 		}
 
@@ -2385,7 +2385,7 @@ matrix_type :: proc() {
 
 		c := a * b
 		#assert(type_of(c) == matrix[2, 2]f32)
-		fmt.tprintln("c = a * b", c)
+		fmt.println("c = a * b", c)
 	}
 
 	{ // Matrices support multiplication between matrices and arrays

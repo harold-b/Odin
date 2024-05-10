@@ -167,7 +167,7 @@ gb_internal i32 linker_stage(LinkerData *gen) {
 
 					if (has_asm_extension(lib)) {
 						if (!string_set_update(&asm_files, lib)) {
-							String asm_file = asm_files.entries[i].value;
+							String asm_file = lib;
 							String obj_file = concatenate_strings(permanent_allocator(), asm_file, str_lit(".obj"));
 							String obj_format = str_lit("win64");
 						#if defined(GB_ARCH_32_BIT)
@@ -432,7 +432,7 @@ gb_internal i32 linker_stage(LinkerData *gen) {
 							if (string_ends_with(lib, str_lit(".a")) || string_ends_with(lib, str_lit(".o"))) {
 								// static libs and object files, absolute full path relative to the file in which the lib was imported from
 								lib_str = gb_string_append_fmt(lib_str, " -l:\"%.*s\" ", LIT(lib));
-							} else if (string_ends_with(lib, str_lit(".so"))) {
+							} else if (string_ends_with(lib, str_lit(".so")) || string_contains_string(lib, str_lit(".so."))) {
 								// dynamic lib, relative path to executable
 								// NOTE(vassvik): it is the user's responsibility to make sure the shared library files are visible
 								//                at runtime to the executable

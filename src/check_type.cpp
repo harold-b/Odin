@@ -381,6 +381,7 @@ gb_internal Type *check_record_polymorphic_params(CheckerContext *ctx, Ast *poly
 			Type *type = nullptr;
 			bool is_type_param = false;
 			bool is_type_polymorphic_type = false;
+			Type *specialization = nullptr;
 			if (type_expr == nullptr && default_value == nullptr) {
 				error(param, "Expected a type for this parameter");
 				continue;
@@ -393,7 +394,6 @@ gb_internal Type *check_record_polymorphic_params(CheckerContext *ctx, Ast *poly
 				}
 				if (type_expr->kind == Ast_TypeidType) {
 					is_type_param = true;
-					Type *specialization = nullptr;
 					if (type_expr->TypeidType.specialization != nullptr) {
 						Ast *s = type_expr->TypeidType.specialization;
 						specialization = check_type(ctx, s);
@@ -471,6 +471,15 @@ gb_internal Type *check_record_polymorphic_params(CheckerContext *ctx, Ast *poly
 						if (is_type_polymorphic(base_type(operand.type))) {
 							*is_polymorphic_ = true;
 							can_check_fields = false;
+						} else if (specialization &&
+						           !check_type_specialization_to(ctx, specialization, operand.type, false, /*modify_type*/true)) {
+							if (!ctx->no_polymorphic_errors) {
+								gbString t = type_to_string(operand.type);
+								gbString s = type_to_string(specialization);
+								error(operand.expr, "Cannot convert type '%s' to the specialization '%s'", t, s);
+								gb_string_free(s);
+								gb_string_free(t);
+							}
 						}
 						e = alloc_entity_type_name(scope, token, operand.type);
 						e->TypeName.is_type_alias = true;
@@ -797,11 +806,11 @@ gb_internal void check_enum_type(CheckerContext *ctx, Type *enum_type, Type *nam
 	enum_type->Enum.scope = ctx->scope;
 
 	Type *base_type = t_int;
-	if (et->base_type != nullptr) {
+	if (unparen_expr(et->base_type) != nullptr) {
 		base_type = check_type(ctx, et->base_type);
 	}
 
-	if (base_type == nullptr || !is_type_integer(base_type)) {
+	if (base_type == nullptr || base_type == t_invalid || !is_type_integer(base_type)) {
 		error(node, "Base type for enumeration must be an integer");
 		return;
 	}
@@ -955,13 +964,18 @@ gb_internal void check_bit_field_type(CheckerContext *ctx, Type *bit_field_type,
 	GB_ASSERT(is_type_bit_field(bit_field_type));
 
 	Type *backing_type = check_type(ctx, bf->backing_type);
-	if (backing_type == nullptr || !is_valid_bit_field_backing_type(backing_type)) {
-		error(node, "Backing type for a bit_field must be an integer or an array of an integer");
+
+	bit_field_type->BitField.backing_type = backing_type ? backing_type : t_u8;
+	bit_field_type->BitField.scope = ctx->scope;
+
+	if (backing_type == nullptr) {
+		error(bf->backing_type, "Backing type for a bit_field must be an integer or an array of an integer");
 		return;
 	}
-
-	bit_field_type->BitField.backing_type = backing_type;
-	bit_field_type->BitField.scope = ctx->scope;
+	if (!is_valid_bit_field_backing_type(backing_type)) {
+		error(bf->backing_type, "Backing type for a bit_field must be an integer or an array of an integer");
+		return;
+	}
 
 	auto fields    = array_make<Entity *>(permanent_allocator(), 0, bf->fields.count);
 	auto bit_sizes = array_make<u8>      (permanent_allocator(), 0, bf->fields.count);
@@ -1075,6 +1089,8 @@ gb_internal void check_bit_field_type(CheckerContext *ctx, Type *bit_field_type,
 			array_add(&tags, tag);
 
 			add_entity_use(ctx, field, e);
+
+			total_bit_size += bit_size_u8;
 		}
 	}
 
@@ -1089,12 +1105,51 @@ gb_internal void check_bit_field_type(CheckerContext *ctx, Type *bit_field_type,
 
 	if (total_bit_size > maximum_bit_size) {
 		gbString s = type_to_string(backing_type);
-		error(node, "The numbers required %llu exceeds the backing type's (%s) bit size %llu",
+		error(node, "The total bit size of a bit_field's fields (%llu) must fit into its backing type's (%s) bit size of %llu",
 		      cast(unsigned long long)total_bit_size,
 		      s,
 		      cast(unsigned long long)maximum_bit_size);
 		gb_string_free(s);
 	}
+
+	enum EndianKind {
+		Endian_Unknown,
+		Endian_Native,
+		Endian_Little,
+		Endian_Big,
+	};
+	auto const &determine_endian_kind = [](Type *type) -> EndianKind {
+		if (is_type_boolean(type)) {
+			// NOTE(bill): it doesn't matter, and when it does,
+			// that api is absolutely stupid
+			return Endian_Unknown;
+		} else if (is_type_endian_specific(type)) {
+			if (is_type_endian_little(type)) {
+				return Endian_Little;
+			} else {
+				return Endian_Big;
+			}
+		}
+		return Endian_Native;
+	};
+
+	EndianKind backing_type_endian_kind = determine_endian_kind(core_array_type(backing_type));
+	EndianKind endian_kind = Endian_Unknown;
+	for (Entity *f : fields) {
+		EndianKind field_kind = determine_endian_kind(f->type);
+
+		if (field_kind && backing_type_endian_kind != field_kind) {
+			error(f->token, "All 'bit_field' field types must match the same endian kind as the backing type, i.e. all native, all little, or all big");
+		}
+
+		if (endian_kind == Endian_Unknown) {
+			endian_kind = field_kind;
+		} else if (field_kind && endian_kind != field_kind) {
+			error(f->token, "All 'bit_field' field types must be of the same endian variety, i.e. all native, all little, or all big");
+		}
+	}
+
+
 
 	if (bit_sizes.count > 0 && is_type_integer(backing_type)) {
 		bool all_booleans = is_type_boolean(fields[0]->type);
@@ -1111,7 +1166,7 @@ gb_internal void check_bit_field_type(CheckerContext *ctx, Type *bit_field_type,
 				}
 			}
 			if (all_ones && all_booleans) {
-				if (build_context.vet_flags & VetFlag_Style) {
+				if (ast_file_vet_style(ctx->file)) {
 					char const *msg = "This 'bit_field' is better expressed as a 'bit_set' since all of the fields are booleans, of 1-bit in size, and the backing type is an integer (-vet-style)";
 					error(node, msg);
 				} else {
@@ -1384,6 +1439,10 @@ gb_internal bool check_type_specialization_to(CheckerContext *ctx, Type *special
 		bool can_convert = check_cast_internal(ctx, &o, specialization);
 		return can_convert;
 	} else if (t->kind == Type_Struct) {
+		if (t->Struct.polymorphic_parent == nullptr &&
+		    t == s) {
+			return true;
+		}
 		if (t->Struct.polymorphic_parent == specialization) {
 			return true;
 		}
@@ -1433,6 +1492,10 @@ gb_internal bool check_type_specialization_to(CheckerContext *ctx, Type *special
 			return true;
 		}
 	} else if (t->kind == Type_Union) {
+		if (t->Union.polymorphic_parent == nullptr &&
+		    t == s) {
+			return true;
+		}
 		if (t->Union.polymorphic_parent == specialization) {
 			return true;
 		}
@@ -1973,8 +2036,8 @@ gb_internal Type *check_get_params(CheckerContext *ctx, Scope *scope, Ast *_para
 				}
 
 				if (p->flags&FieldFlag_no_alias) {
-					if (!is_type_pointer(type)) {
-						error(name, "'#no_alias' can only be applied pointer typed parameters");
+					if (!is_type_pointer(type) && !is_type_multi_pointer(type)) {
+						error(name, "'#no_alias' can only be applied pointer or multi-pointer typed parameters");
 						p->flags &= ~FieldFlag_no_alias; // Remove the flag
 					}
 				}
@@ -2013,6 +2076,7 @@ gb_internal Type *check_get_params(CheckerContext *ctx, Scope *scope, Ast *_para
 					param = alloc_entity_param(scope, name->Ident.token, type, is_using, true);
 					param->Variable.param_value = param_value;
 					param->Variable.field_group_index = field_group_index;
+					param->Variable.type_expr = type_expr;
 				}
 			}
 			if (p->flags&FieldFlag_no_alias) {
@@ -3219,6 +3283,11 @@ gb_internal bool check_type_internal(CheckerContext *ctx, Ast *e, Type **type, T
 	case_end;
 
 	case_ast_node(pe, ParenExpr, e);
+		if (pe->expr == nullptr) {
+			error(e, "Expected an expression or type within the parentheses");
+			*type = t_invalid;
+			return true;
+		}
 		*type = check_type_expr(ctx, pe->expr, named_type);
 		set_base_type(named_type, *type);
 		return true;

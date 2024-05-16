@@ -1441,6 +1441,13 @@ gb_internal bool is_polymorphic_type_assignable(CheckerContext *c, Type *poly, T
 			// return check_is_assignable_to(c, &o, poly); // && is_type_subtype_of_and_allow_polymorphic(o.type, poly);
 		}
 		return false;
+
+	case Type_BitField:
+		if (source->kind == Type_BitField) {
+			return is_polymorphic_type_assignable(c, poly->BitField.backing_type, source->BitField.backing_type, true, modify_type);
+		}
+		return false;
+
 	case Type_Tuple:
 		GB_PANIC("This should never happen");
 		return false;
@@ -1787,6 +1794,13 @@ gb_internal bool check_unary_op(CheckerContext *c, Operand *o, Token op) {
 		gb_string_free(str);
 		return false;
 	}
+	if (o->mode == Addressing_Type) {
+		gbString str = type_to_string(o->type);
+		error(o->expr, "Expected an expression for operator '%.*s', got type '%s'", LIT(op.string), str);
+		gb_string_free(str);
+		return false;
+	}
+
 	Type *type = base_type(core_array_type(o->type));
 	gbString str = nullptr;
 	switch (op.kind) {
@@ -2426,32 +2440,6 @@ gb_internal bool check_is_not_addressable(CheckerContext *c, Operand *o) {
 	return o->mode != Addressing_Variable && o->mode != Addressing_SoaVariable;
 }
 
-gb_internal void check_old_for_or_switch_value_usage(Ast *expr) {
-	Entity *e = entity_of_node(expr);
-	if (e != nullptr && (e->flags & EntityFlag_OldForOrSwitchValue) != 0) {
-		GB_ASSERT(e->kind == Entity_Variable);
-
-		ERROR_BLOCK();
-
-		if ((e->flags & EntityFlag_ForValue) != 0) {
-			Type *parent_type = type_deref(e->Variable.for_loop_parent_type);
-
-			error(expr, "Assuming a for-in defined value is addressable as the iterable is passed by value has been disallowed.");
-
-			if (is_type_map(parent_type)) {
-				error_line("\tSuggestion: Prefer doing 'for key, &%.*s in ...'\n", LIT(e->token.string));
-			} else {
-				error_line("\tSuggestion: Prefer doing 'for &%.*s in ...'\n", LIT(e->token.string));
-			}
-		} else {
-			GB_ASSERT((e->flags & EntityFlag_SwitchValue) != 0);
-
-			error(expr, "Assuming a switch-in defined value is addressable as the iterable is passed by value has been disallowed.");
-			error_line("\tSuggestion: Prefer doing 'switch &%.*s in ...'\n", LIT(e->token.string));
-		}
-	}
-}
-
 gb_internal void check_unary_expr(CheckerContext *c, Operand *o, Token op, Ast *node) {
 	switch (op.kind) {
 	case Token_And: { // Pointer address
@@ -2479,7 +2467,10 @@ gb_internal void check_unary_expr(CheckerContext *c, Operand *o, Token op, Ast *
 						{
 							ERROR_BLOCK();
 							error(op, "Cannot take the pointer address of '%s'", str);
-							if (e != nullptr && (e->flags & EntityFlag_ForValue) != 0) {
+							if (e == nullptr) {
+								break;
+							}
+							if ((e->flags & EntityFlag_ForValue) != 0) {
 								Type *parent_type = type_deref(e->Variable.for_loop_parent_type);
 
 								if (parent_type != nullptr && is_type_string(parent_type)) {
@@ -2489,9 +2480,17 @@ gb_internal void check_unary_expr(CheckerContext *c, Operand *o, Token op, Ast *
 								} else {
 									error_line("\tSuggestion: Did you want to pass the iterable value to the for statement by pointer to get addressable semantics?\n");
 								}
+
+								if (is_type_map(parent_type)) {
+									error_line("\t            Prefer doing 'for key, &%.*s in ...'\n", LIT(e->token.string));
+								} else {
+									error_line("\t            Prefer doing 'for &%.*s in ...'\n", LIT(e->token.string));
+								}
 							}
-							if (e != nullptr && (e->flags & EntityFlag_SwitchValue) != 0) {
+							if ((e->flags & EntityFlag_SwitchValue) != 0) {
 								error_line("\tSuggestion: Did you want to pass the value to the switch statement by pointer to get addressable semantics?\n");
+
+								error_line("\t            Prefer doing 'switch &%.*s in ...'\n", LIT(e->token.string));
 							}
 						}
 						break;
@@ -2513,11 +2512,6 @@ gb_internal void check_unary_expr(CheckerContext *c, Operand *o, Token op, Ast *
 				o->type = alloc_type_pointer(o->type);
 			}
 		} else {
-			if (ast_node_expect(node, Ast_UnaryExpr)) {
-				ast_node(ue, UnaryExpr, node);
-				check_old_for_or_switch_value_usage(ue->expr);
-			}
-
 			o->type = alloc_type_pointer(o->type);
 		}
 
@@ -6193,6 +6187,20 @@ gb_internal bool evaluate_where_clauses(CheckerContext *ctx, Ast *call_expr, Sco
 				}
 				return false;
 			}
+
+			if (ast_file_vet_style(ctx->file)) {
+				Ast *c = unparen_expr(clause);
+				if (c->kind == Ast_BinaryExpr && c->BinaryExpr.op.kind == Token_CmpAnd) {
+					ERROR_BLOCK();
+					error(c, "Prefer to separate 'where' clauses with a comma rather than '&&'");
+					gbString x = expr_to_string(c->BinaryExpr.left);
+					gbString y = expr_to_string(c->BinaryExpr.right);
+					error_line("\tSuggestion: '%s, %s'\n", x, y);
+					gb_string_free(y);
+					gb_string_free(x);
+				}
+			}
+
 		}
 	}
 
@@ -7798,8 +7806,8 @@ gb_internal bool check_set_index_data(Operand *o, Type *t, bool indirection, i64
 
 	if (is_type_pointer(original_type) && indirection) {
 		Type *ptr = base_type(original_type);
-		if (ptr->kind == Type_Pointer && o->mode == Addressing_SoaVariable) {
-			o->type = ptr->Pointer.elem;
+		if (ptr->kind == Type_MultiPointer && o->mode == Addressing_SoaVariable) {
+			o->type = ptr->MultiPointer.elem;
 			o->mode = Addressing_Value;
 			return true;
 		}
@@ -10235,6 +10243,17 @@ gb_internal ExprKind check_slice_expr(CheckerContext *c, Operand *o, Ast *node, 
 	case Type_Struct:
 		if (is_type_soa_struct(t)) {
 			valid = true;
+			if (t->Struct.soa_kind == StructSoa_Fixed) {
+				max_count = t->Struct.soa_count;
+				if (o->mode != Addressing_Variable && !is_type_pointer(o->type)) {
+					gbString str = expr_to_string(node);
+					error(node, "Cannot slice #soa array '%s', value is not addressable", str);
+					gb_string_free(str);
+					o->mode = Addressing_Invalid;
+					o->expr = node;
+					return kind;
+				}
+			}
 			o->type = make_soa_struct_slice(c, nullptr, nullptr, t->Struct.soa_elem);
 		}
 		break;
@@ -10774,6 +10793,7 @@ gb_internal ExprKind check_expr_base_internal(CheckerContext *c, Operand *o, Ast
 		return Expr_Expr;
 	case_end;
 
+	case Ast_DistinctType:
 	case Ast_TypeidType:
 	case Ast_PolyType:
 	case Ast_ProcType:

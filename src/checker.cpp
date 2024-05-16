@@ -1013,6 +1013,7 @@ gb_internal void init_universal(void) {
 			{"FreeBSD",      TargetOs_freebsd},
 			{"Haiku",        TargetOs_haiku},
 			{"OpenBSD",      TargetOs_openbsd},
+			{"NetBSD",       TargetOs_netbsd},
 			{"WASI",         TargetOs_wasi},
 			{"JS",           TargetOs_js},
 			{"Freestanding", TargetOs_freestanding},
@@ -1043,6 +1044,7 @@ gb_internal void init_universal(void) {
 		GlobalEnumValue values[BuildMode_COUNT] = {
 			{"Executable", BuildMode_Executable},
 			{"Dynamic",    BuildMode_DynamicLibrary},
+			{"Static",     BuildMode_StaticLibrary},
 			{"Object",     BuildMode_Object},
 			{"Assembly",   BuildMode_Assembly},
 			{"LLVM_IR",    BuildMode_LLVM_IR},

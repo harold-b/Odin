@@ -3428,8 +3428,8 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 		auto types = slice_make<Type *>(permanent_allocator(), t->Struct.fields.count-1);
 		for_array(i, types) {
 			Entity *f = t->Struct.fields[i];
-			GB_ASSERT(f->type->kind == Type_Pointer);
-			types[i] = alloc_type_slice(f->type->Pointer.elem);
+			GB_ASSERT(f->type->kind == Type_MultiPointer);
+			types[i] = alloc_type_slice(f->type->MultiPointer.elem);
 		}
 
 		operand->type = alloc_type_tuple_from_field_types(types.data, types.count, false, false);
@@ -5431,6 +5431,58 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 			operand->mode = Addressing_Constant;
 			operand->type = t_untyped_integer;
 			operand->value = exact_value_i64(u->Union.kind == UnionType_no_nil ? 0 : 1);
+		} break;
+
+	case BuiltinProc_type_bit_set_elem_type:
+		{
+
+			if (operand->mode != Addressing_Type) {
+				error(operand->expr, "Expected a type for '%.*s'", LIT(builtin_name));
+				operand->mode = Addressing_Invalid;
+				operand->type = t_invalid;
+				return false;
+			}
+
+			Type *bs = operand->type;
+
+			if (!is_type_bit_set(bs)) {
+				error(operand->expr, "Expected a bit_set type for '%.*s'", LIT(builtin_name));
+				operand->mode = Addressing_Invalid;
+				operand->type = t_invalid;
+				return false;
+			}
+
+			bs = base_type(bs);
+			GB_ASSERT(bs->kind == Type_BitSet);
+
+			operand->mode = Addressing_Type;
+			operand->type = bs->BitSet.elem;
+		} break;
+
+	case BuiltinProc_type_bit_set_underlying_type:
+		{
+
+			if (operand->mode != Addressing_Type) {
+				error(operand->expr, "Expected a type for '%.*s'", LIT(builtin_name));
+				operand->mode = Addressing_Invalid;
+				operand->type = t_invalid;
+				return false;
+			}
+
+			Type *bs = operand->type;
+
+			if (!is_type_bit_set(bs)) {
+				error(operand->expr, "Expected a bit_set type for '%.*s'", LIT(builtin_name));
+				operand->mode = Addressing_Invalid;
+				operand->type = t_invalid;
+				return false;
+			}
+
+			bs = base_type(bs);
+			GB_ASSERT(bs->kind == Type_BitSet);
+
+			operand->mode = Addressing_Type;
+			operand->type = bit_set_to_int(bs);
 		} break;
 
 	case BuiltinProc_type_union_variant_count:

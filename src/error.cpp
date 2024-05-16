@@ -266,7 +266,7 @@ gb_internal void terminal_reset_colours(void) {
 }
 
 
-gb_internal isize show_error_on_line(TokenPos const &pos, TokenPos end, char const *prefix=nullptr) {
+gb_internal isize show_error_on_line(TokenPos const &pos, TokenPos end) {
 	get_error_value()->end = end;
 	if (!show_error_line()) {
 		return -1;
@@ -289,16 +289,12 @@ gb_internal isize show_error_on_line(TokenPos const &pos, TokenPos end, char con
 			MAX_LINE_LENGTH_PADDED = MAX_LINE_LENGTH-MAX_TAB_WIDTH-ELLIPSIS_PADDING,
 		};
 
-		if (prefix) {
-			error_out("\t%s\n\n", prefix);
-		}
+		i32 error_length = gb_max(end.offset - pos.offset, 1);
 
 		error_out("\t");
 
 		terminal_set_colours(TerminalStyle_Bold, TerminalColour_White);
 
-
-		i32 error_length = gb_max(end.offset - pos.offset, 1);
 
 		isize squiggle_extra = 0;
 
@@ -672,7 +668,20 @@ gb_internal int error_value_cmp(void const *a, void const *b) {
 	return token_pos_cmp(x->pos, y->pos);
 }
 
+gb_internal bool errors_already_printed = false;
+
 gb_internal void print_all_errors(void) {
+	if (errors_already_printed) {
+		if (global_error_collector.warning_count.load() == global_error_collector.error_values.count) {
+			for (ErrorValue &ev : global_error_collector.error_values) {
+				array_free(&ev.msg);
+			}
+			array_clear(&global_error_collector.error_values);
+			errors_already_printed = false;
+		}
+		return;
+	}
+
 	auto const &escape_char = [](gbString res, u8 c) -> gbString {
 		switch (c) {
 		case '\n': res = gb_string_append_length(res, "\\n",  2); break;
@@ -719,9 +728,13 @@ gb_internal void print_all_errors(void) {
 					}
 				}
 
-				if (it.str.len-it.pos > 0) {
-					array_add_elems(&prev_ev->msg, it.str.text+it.pos, it.str.len-it.pos);
+				// Merge additional text (suggestions for example) into the previous error.
+				String current = {prev_ev->msg.data, prev_ev->msg.count};
+				String addition = {it.str.text+it.pos, it.str.len-it.pos};
+				if (addition.len > 0 && !string_contains_string(current, addition)) {
+					array_add_elems(&prev_ev->msg, addition.text, addition.len);
 				}
+
 				array_free(&ev.msg);
 				array_ordered_remove(&global_error_collector.error_values, i);
 			} else {
@@ -823,4 +836,6 @@ gb_internal void print_all_errors(void) {
 	}
 	gbFile *f = gb_file_get_standard(gbFileStandard_Error);
 	gb_file_write(f, res, gb_string_length(res));
+
+	errors_already_printed = true;
 }

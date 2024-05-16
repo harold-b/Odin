@@ -988,6 +988,27 @@ gb_internal Type *alloc_type_soa_pointer(Type *elem) {
 	return t;
 }
 
+gb_internal Type *alloc_type_pointer_to_multi_pointer(Type *ptr) {
+	Type *original_type = ptr;
+	ptr = base_type(ptr);
+	if (ptr->kind == Type_Pointer) {
+		return alloc_type_multi_pointer(ptr->Pointer.elem);
+	} else if (ptr->kind != Type_MultiPointer) {
+		GB_PANIC("Invalid type: %s", type_to_string(original_type));
+	}
+	return original_type;
+}
+
+gb_internal Type *alloc_type_multi_pointer_to_pointer(Type *ptr) {
+	Type *original_type = ptr;
+	ptr = base_type(ptr);
+	if (ptr->kind == Type_MultiPointer) {
+		return alloc_type_pointer(ptr->MultiPointer.elem);
+	} else if (ptr->kind != Type_Pointer) {
+		GB_PANIC("Invalid type: %s", type_to_string(original_type));
+	}
+	return original_type;
+}
 
 gb_internal Type *alloc_type_array(Type *elem, i64 count, Type *generic_count = nullptr) {
 	if (generic_count != nullptr) {
@@ -2100,8 +2121,8 @@ gb_internal bool is_type_polymorphic_record_unspecialized(Type *t) {
 	t = base_type(t);
 	if (t->kind == Type_Struct) {
 		return t->Struct.is_polymorphic && !t->Struct.is_poly_specialized;
-	} else if (t->kind == Type_Struct) {
-		return t->Struct.is_polymorphic && !t->Struct.is_poly_specialized;
+	} else if (t->kind == Type_Union) {
+		return t->Union.is_polymorphic && !t->Union.is_poly_specialized;
 	}
 	return false;
 }
@@ -3267,6 +3288,10 @@ gb_internal Selection lookup_field_with_selection(Type *type_, String field_name
 			}
 		}
 
+		if (is_type_polymorphic(type)) {
+			// NOTE(bill): A polymorphic struct has no fields, this only hits in the case of an error
+			return sel;
+		}
 		wait_signal_until_available(&type->Struct.fields_wait_signal);
 		isize field_count = type->Struct.fields.count;
 		if (field_count != 0) for_array(i, type->Struct.fields) {

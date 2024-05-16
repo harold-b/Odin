@@ -45,7 +45,11 @@ if [ -z "$LLVM_CONFIG" ]; then
 	fi
 fi
 
-: ${CXX=$($LLVM_CONFIG --bindir)/clang++}
+if ["$OS_NAME" != "Darwin" ]; then
+	: ${CXX=$($LLVM_CONFIG --bindir)/clang++}
+else
+	: ${CXX=clang++}
+fi
 
 LLVM_VERSION="$($LLVM_CONFIG --version)"
 LLVM_VERSION_MAJOR="$(echo $LLVM_VERSION | awk -F. '{print $1}')"

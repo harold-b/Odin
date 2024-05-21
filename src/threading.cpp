@@ -768,7 +768,7 @@ gb_internal void futex_wait(Futex *f, Footex val) {
 
 #elif defined(GB_SYSTEM_OSX)
 
-#if __has_include(<os/os_sync_wait_on_address.h>)
+#if __MAC_OS_X_VERSION_MIN_REQUIRED >= MAC_OS_VERSION_14_4 && __has_include(<os/os_sync_wait_on_address.h>)
 	#define DARWIN_WAIT_ON_ADDRESS_AVAILABLE
 	#include <os/os_sync_wait_on_address.h>
 #endif

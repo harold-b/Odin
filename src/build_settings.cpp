@@ -978,7 +978,7 @@ gb_global TargetMetrics target_linux_arm32 = {
 	TargetOs_linux,
 	TargetArch_arm32,
 	4, 4, 4, 8,
-	str_lit("arm-linux-gnu"),
+	str_lit("arm-unknown-linux-gnueabihf"),
 };
 
 gb_global TargetMetrics target_darwin_amd64 = {
@@ -1906,6 +1906,16 @@ gb_internal void init_build_context(TargetMetrics *cross_target, Subtarget subta
 		#else
 			metrics = &target_linux_amd64;
 		#endif
+	#elif defined(GB_CPU_ARM)
+		#if defined(GB_SYSTEM_WINDOWS)
+			#error "Build Error: Unsupported architecture"
+		#elif defined(GB_SYSTEM_OSX)
+			#error "Build Error: Unsupported architecture"
+		#elif defined(GB_SYSTEM_FREEBSD)
+			#error "Build Error: Unsupported architecture"
+		#else
+			metrics = &target_linux_arm32;
+		#endif
 	#else
 		#if defined(GB_SYSTEM_WINDOWS)
 			metrics = &target_windows_i386;
@@ -2052,14 +2062,6 @@ gb_internal void init_build_context(TargetMetrics *cross_target, Subtarget subta
 
 	if (bc->metrics.os == TargetOs_freestanding) {
 		bc->ODIN_DEFAULT_TO_NIL_ALLOCATOR = !bc->ODIN_DEFAULT_TO_PANIC_ALLOCATOR;
-	} else if (is_arch_wasm()) {
-		if (bc->metrics.os == TargetOs_js || bc->metrics.os == TargetOs_wasi) {
-			// TODO(bill): Should these even have a default "heap-like" allocator?
-		}
-
-		if (!bc->ODIN_DEFAULT_TO_NIL_ALLOCATOR && !bc->ODIN_DEFAULT_TO_PANIC_ALLOCATOR) {
-			bc->ODIN_DEFAULT_TO_PANIC_ALLOCATOR = true;
-		}
 	}
 }
 

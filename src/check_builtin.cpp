@@ -1092,7 +1092,13 @@ gb_internal bool cache_load_file_directive(CheckerContext *c, Ast *call, String 
 
 		BlockingMutex *ignore_mutex = nullptr;
 		bool ok = determine_path_from_string(ignore_mutex, call, base_dir, original_string, &path);
-		gb_unused(ok);
+		if (!ok) {
+			if (err_on_not_found) {
+				error(ce->proc, "Failed to `#%.*s` file: %.*s; invalid file or cannot be found", LIT(builtin_name), LIT(original_string));
+			}
+			call->state_flags |= StateFlag_DirectiveWasFalse;
+			return false;
+		}
 	}
 
 	MUTEX_GUARD(&c->info->load_file_mutex);
@@ -5220,6 +5226,34 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 		operand->mode = Addressing_Constant;
 		operand->type = t_untyped_bool;
 		break;
+
+
+	case BuiltinProc_type_is_matrix_row_major:
+	case BuiltinProc_type_is_matrix_column_major:
+		{
+			Operand op = {};
+			Type *bt = check_type(c, ce->args[0]);
+			Type *type = base_type(bt);
+			if (type == nullptr || type == t_invalid) {
+				error(ce->args[0], "Expected a type for '%.*s'", LIT(builtin_name));
+				return false;
+			}
+			if (type->kind != Type_Matrix) {
+				gbString s = type_to_string(bt);
+				error(ce->args[0], "Expected a matrix type for '%.*s', got '%s'", LIT(builtin_name), s);
+				gb_string_free(s);
+				return false;
+			}
+
+			if (id == BuiltinProc_type_is_matrix_row_major) {
+				operand->value = exact_value_bool(bt->Matrix.is_row_major == true);
+			} else {
+				operand->value = exact_value_bool(bt->Matrix.is_row_major == false);
+			}
+			operand->mode = Addressing_Constant;
+			operand->type = t_untyped_bool;
+			break;
+		}
 
 	case BuiltinProc_type_has_field:
 		{

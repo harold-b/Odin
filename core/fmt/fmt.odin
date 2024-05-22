@@ -13,20 +13,7 @@ import "core:unicode/utf8"
 
 // Internal data structure that stores the required information for formatted printing
 Info :: struct {
-	minus:     bool,
-	plus:      bool,
-	space:     bool,
-	zero:      bool,
-	hash:      bool,
-	width_set: bool,
-	prec_set:  bool,
-
-	width:     int,
-	prec:      int,
-	indent:    int,
-
-	ignore_user_formatters: bool,
-	in_bad: bool,
+	using state: Info_State,
 
 	writer: io.Writer,
 	arg: any, // Temporary
@@ -38,6 +25,24 @@ Info :: struct {
 
 	n: int, // bytes written
 }
+
+Info_State :: struct {
+	minus:     bool,
+	plus:      bool,
+	space:     bool,
+	zero:      bool,
+	hash:      bool,
+	width_set: bool,
+	prec_set:  bool,
+
+	ignore_user_formatters: bool,
+	in_bad: bool,
+
+	width:     int,
+	prec:      int,
+	indent:    int,
+}
+
 
 // Custom formatter signature. It returns true if the formatting was successful and false when it could not be done
 User_Formatter :: #type proc(fi: ^Info, arg: any, verb: rune) -> bool
@@ -994,6 +999,33 @@ _fmt_int :: proc(fi: ^Info, u: u64, base: int, is_signed: bool, bit_size: int, d
 		}
 	}
 
+	buf: [256]byte
+	start := 0
+
+	if fi.hash && !is_signed {
+		switch base {
+		case 2:
+			io.write_byte(fi.writer, '0', &fi.n)
+			io.write_byte(fi.writer, 'b', &fi.n)
+			start = 2
+
+		case 8:
+			io.write_byte(fi.writer, '0', &fi.n)
+			io.write_byte(fi.writer, 'o', &fi.n)
+			start = 2
+
+		case 12:
+			io.write_byte(fi.writer, '0', &fi.n)
+			io.write_byte(fi.writer, 'o', &fi.n)
+			start = 2
+
+		case 16:
+			io.write_byte(fi.writer, '0', &fi.n)
+			io.write_byte(fi.writer, 'x', &fi.n)
+			start = 2
+		}
+	}
+
 	prec := 0
 	if fi.prec_set {
 		prec = fi.prec
@@ -1019,14 +1051,10 @@ _fmt_int :: proc(fi: ^Info, u: u64, base: int, is_signed: bool, bit_size: int, d
 		panic("_fmt_int: unknown base, whoops")
 	}
 
-	buf: [256]byte
-	start := 0
-
 	flags: strconv.Int_Flags
-	if fi.hash { flags |= {.Prefix} }
-	if fi.plus { flags |= {.Plus}   }
+	if fi.hash && !fi.zero && start == 0 { flags |= {.Prefix} }
+	if fi.plus               { flags |= {.Plus}   }
 	s := strconv.append_bits(buf[start:], u, base, is_signed, bit_size, digits, flags)
-
 	prev_zero := fi.zero
 	defer fi.zero = prev_zero
 	fi.zero = false
@@ -1056,6 +1084,33 @@ _fmt_int_128 :: proc(fi: ^Info, u: u128, base: int, is_signed: bool, bit_size: i
 		}
 	}
 
+	buf: [256]byte
+	start := 0
+
+	if fi.hash && !is_signed {
+		switch base {
+		case 2:
+			io.write_byte(fi.writer, '0', &fi.n)
+			io.write_byte(fi.writer, 'b', &fi.n)
+			start = 2
+
+		case 8:
+			io.write_byte(fi.writer, '0', &fi.n)
+			io.write_byte(fi.writer, 'o', &fi.n)
+			start = 2
+
+		case 12:
+			io.write_byte(fi.writer, '0', &fi.n)
+			io.write_byte(fi.writer, 'o', &fi.n)
+			start = 2
+
+		case 16:
+			io.write_byte(fi.writer, '0', &fi.n)
+			io.write_byte(fi.writer, 'x', &fi.n)
+			start = 2
+		}
+	}
+
 	prec := 0
 	if fi.prec_set {
 		prec = fi.prec
@@ -1081,12 +1136,9 @@ _fmt_int_128 :: proc(fi: ^Info, u: u128, base: int, is_signed: bool, bit_size: i
 		panic("_fmt_int: unknown base, whoops")
 	}
 
-	buf: [256]byte
-	start := 0
-
 	flags: strconv.Int_Flags
-	if fi.hash && !fi.zero { flags |= {.Prefix} }
-	if fi.plus             { flags |= {.Plus}   }
+	if fi.hash && !fi.zero && start == 0 { flags |= {.Prefix} }
+	if fi.plus                           { flags |= {.Plus}   }
 	s := strconv.append_bits_128(buf[start:], u, base, is_signed, bit_size, digits, flags)
 
 	if fi.hash && fi.zero && fi.indent == 0 {
@@ -1777,7 +1829,7 @@ fmt_write_array :: proc(fi: ^Info, array_data: rawptr, count: int, elem_size: in
 // Returns: A boolean value indicating whether to continue processing the tag
 //
 @(private)
-handle_tag :: proc(data: rawptr, info: reflect.Type_Info_Struct, idx: int, verb: ^rune, optional_len: ^int, use_nul_termination: ^bool) -> (do_continue: bool) {
+handle_tag :: proc(state: ^Info_State, data: rawptr, info: reflect.Type_Info_Struct, idx: int, verb: ^rune, optional_len: ^int, use_nul_termination: ^bool) -> (do_continue: bool) {
 	handle_optional_len :: proc(data: rawptr, info: reflect.Type_Info_Struct, field_name: string, optional_len: ^int) {
 		if optional_len == nil {
 			return
@@ -1794,45 +1846,83 @@ handle_tag :: proc(data: rawptr, info: reflect.Type_Info_Struct, idx: int, verb:
 			break
 		}
 	}
+
 	tag := info.tags[idx]
 	if vt, ok := reflect.struct_tag_lookup(reflect.Struct_Tag(tag), "fmt"); ok {
 		value := strings.trim_space(string(vt))
 		switch value {
-		case "": return false
+		case "":  return false
 		case "-": return true
 		}
-		r, w := utf8.decode_rune_in_string(value)
-		value = value[w:]
-		if value == "" || value[0] == ',' {
-			if verb^ == 'w' {
-				// TODO(bill): is this a good idea overriding that field tags if 'w' is used?
-				switch r {
-				case 's': r = 'q'
-				case:     r = 'w'
-				}
+
+		fi := state
+
+		head, _, tail := strings.partition(value, ",")
+
+		i := 0
+		prefix_loop: for ; i < len(head); i += 1 {
+			switch head[i] {
+			case '+':
+				fi.plus = true
+			case '-':
+				fi.minus = true
+				fi.zero = false
+			case ' ':
+				fi.space = true
+			case '#':
+				fi.hash = true
+			case '0':
+				fi.zero = !fi.minus
+			case:
+				break prefix_loop
 			}
-			verb^ = r
-			if len(value) > 0 && value[0] == ',' {
-				field_name := value[1:]
-				if field_name == "0" {
-					if use_nul_termination != nil {
-						use_nul_termination^ = true
-					}
-				} else {
-					switch r {
-					case 's', 'q':
+		}
+
+		fi.width, i, fi.width_set = _parse_int(head, i)
+		if i < len(head) && head[i] == '.' {
+			i += 1
+			prev_i := i
+			fi.prec, i, fi.prec_set = _parse_int(head, i)
+			if i == prev_i {
+				fi.prec = 0
+				fi.prec_set = true
+			}
+		}
+
+		r: rune
+		if i >= len(head) || head[i] == ' ' {
+			r = 'v'
+		} else {
+			r, _ = utf8.decode_rune_in_string(head[i:])
+		}
+		if verb^ == 'w' {
+			// TODO(bill): is this a good idea overriding that field tags if 'w' is used?
+			switch r {
+			case 's': r = 'q'
+			case:     r = 'w'
+			}
+		}
+		verb^ = r
+		if tail != "" {
+			field_name := tail
+			if field_name == "0" {
+				if use_nul_termination != nil {
+					use_nul_termination^ = true
+				}
+			} else {
+				switch r {
+				case 's', 'q':
+					handle_optional_len(data, info, field_name, optional_len)
+				case 'v', 'w':
+					#partial switch reflect.type_kind(info.types[idx].id) {
+					case .String, .Multi_Pointer, .Array, .Slice, .Dynamic_Array:
 						handle_optional_len(data, info, field_name, optional_len)
-					case 'v', 'w':
-						#partial switch reflect.type_kind(info.types[idx].id) {
-						case .String, .Multi_Pointer, .Array, .Slice, .Dynamic_Array:
-							handle_optional_len(data, info, field_name, optional_len)
-						}
 					}
 				}
 			}
 		}
 	}
-	return false
+	return
 }
 // Formats a struct for output, handling various struct types (e.g., SOA, raw unions)
 //
@@ -1980,7 +2070,9 @@ fmt_struct :: proc(fi: ^Info, v: any, the_verb: rune, info: runtime.Type_Info_St
 			optional_len: int = -1
 			use_nul_termination: bool = false
 			verb := the_verb if the_verb == 'w' else 'v'
-			if handle_tag(v.data, info, i, &verb, &optional_len, &use_nul_termination) {
+
+			new_state := fi.state
+			if handle_tag(&new_state, v.data, info, i, &verb, &optional_len, &use_nul_termination) {
 				continue
 			}
 			field_count += 1
@@ -2005,8 +2097,11 @@ fmt_struct :: proc(fi: ^Info, v: any, the_verb: rune, info: runtime.Type_Info_St
 			if t := info.types[i]; reflect.is_any(t) {
 				io.write_string(fi.writer, "any{}", &fi.n)
 			} else {
+				prev_state := fi.state
+				fi.state = new_state
 				data := rawptr(uintptr(v.data) + info.offsets[i])
 				fmt_arg(fi, any{data, t.id}, verb)
+				fi.state = prev_state
 			}
 
 			if do_trailing_comma { io.write_string(fi.writer, ",\n", &fi.n) }
@@ -2679,7 +2774,6 @@ fmt_value :: proc(fi: ^Info, v: any, verb: rune) {
 			io.write_byte(fi.writer, '[' if verb != 'w' else '{', &fi.n)
 			io.write_byte(fi.writer, '\n', &fi.n)
 			defer {
-				io.write_byte(fi.writer, '\n', &fi.n)
 				fmt_write_indent(fi)
 				io.write_byte(fi.writer, ']' if verb != 'w' else '}', &fi.n)
 			}

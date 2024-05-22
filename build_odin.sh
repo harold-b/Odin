@@ -45,11 +45,7 @@ if [ -z "$LLVM_CONFIG" ]; then
 	fi
 fi
 
-if ["$OS_NAME" != "Darwin" ]; then
-	: ${CXX=$($LLVM_CONFIG --bindir)/clang++}
-else
-	: ${CXX=clang++}
-fi
+: ${CXX=$($LLVM_CONFIG --bindir)/clang++}
 
 LLVM_VERSION="$($LLVM_CONFIG --version)"
 LLVM_VERSION_MAJOR="$(echo $LLVM_VERSION | awk -F. '{print $1}')"
@@ -142,12 +138,13 @@ build_odin() {
 }
 
 run_demo() {
+	return
 	./odin run examples/demo/demo.odin -file -- Hellope World
 }
 
 if [ $# -eq 0 ]; then
 	build_odin debug
-	# run_demo
+	run_demo
 elif [ $# -eq 1 ]; then
 	case $1 in
 	report)
@@ -158,7 +155,7 @@ elif [ $# -eq 1 ]; then
 		build_odin $1
 		;;
 	esac
-	# run_demo
+	run_demo
 else
 	error "Too many arguments!"
 fi

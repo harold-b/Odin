@@ -21,6 +21,7 @@ import queue            "core:container/queue"
 import small_array      "core:container/small_array"
 import lru              "core:container/lru"
 import list             "core:container/intrusive/list"
+import rbtree           "core:container/rbtree"
 import topological_sort "core:container/topological_sort"
 
 import crypto           "core:crypto"
@@ -91,9 +92,7 @@ import virtual          "core:mem/virtual"
 
 import ast              "core:odin/ast"
 import doc_format       "core:odin/doc-format"
-import odin_format      "core:odin/format"
 import odin_parser      "core:odin/parser"
-import odin_printer     "core:odin/printer"
 import odin_tokenizer   "core:odin/tokenizer"
 
 import spall            "core:prof/spall"
@@ -147,6 +146,7 @@ _ :: queue
 _ :: small_array
 _ :: lru
 _ :: list
+_ :: rbtree
 _ :: topological_sort
 _ :: crypto
 _ :: crypto_hash
@@ -207,9 +207,7 @@ _ :: mem
 _ :: virtual
 _ :: ast
 _ :: doc_format
-_ :: odin_format
 _ :: odin_parser
-_ :: odin_printer
 _ :: odin_tokenizer
 _ :: os
 _ :: spall

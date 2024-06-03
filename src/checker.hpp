@@ -112,6 +112,7 @@ enum InstrumentationFlag : i32 {
 struct AttributeContext {
 	String  link_name;
 	String  link_prefix;
+	String  link_suffix;
 	String  link_section;
 	String  linkage;
 	isize   init_expr_list_count;
@@ -146,9 +147,10 @@ struct AttributeContext {
 	String enable_target_feature;  // will be enabled for the procedure only
 };
 
-gb_internal gb_inline AttributeContext make_attribute_context(String link_prefix) {
+gb_internal gb_inline AttributeContext make_attribute_context(String link_prefix, String link_suffix) {
 	AttributeContext ac = {};
 	ac.link_prefix = link_prefix;
+	ac.link_suffix = link_suffix;
 	return ac;
 }
 
@@ -302,6 +304,7 @@ struct ForeignContext {
 	Ast *                 curr_library;
 	ProcCallingConvention default_cc;
 	String                link_prefix;
+	String                link_suffix;
 	EntityVisiblityKind   visibility_kind;
 };
 
@@ -414,6 +417,7 @@ struct CheckerInfo {
 	MPSCQueue<Entity *> entity_queue;
 	MPSCQueue<Entity *> required_global_variable_queue;
 	MPSCQueue<Entity *> required_foreign_imports_through_force_queue;
+	MPSCQueue<Entity *> foreign_imports_to_check_fullpaths;
 
 	MPSCQueue<Ast *> intrinsics_entry_point_usage;
 
@@ -434,6 +438,8 @@ struct CheckerInfo {
 	BlockingMutex                       load_directory_mutex;
 	StringMap<LoadDirectoryCache *>     load_directory_cache;
 	PtrMap<Ast *, LoadDirectoryCache *> load_directory_map; // Key: Ast_CallExpr *
+
+
 };
 
 struct CheckerContext {

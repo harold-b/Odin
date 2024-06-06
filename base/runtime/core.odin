@@ -470,6 +470,15 @@ Raw_Soa_Pointer :: struct {
 	index: int,
 }
 
+Raw_Complex32     :: struct {real, imag: f16}
+Raw_Complex64     :: struct {real, imag: f32}
+Raw_Complex128    :: struct {real, imag: f64}
+Raw_Quaternion64  :: struct {imag, jmag, kmag: f16, real: f16}
+Raw_Quaternion128 :: struct {imag, jmag, kmag: f32, real: f32}
+Raw_Quaternion256 :: struct {imag, jmag, kmag: f64, real: f64}
+Raw_Quaternion64_Vector_Scalar  :: struct {vector: [3]f16, scalar: f16}
+Raw_Quaternion128_Vector_Scalar :: struct {vector: [3]f32, scalar: f32}
+Raw_Quaternion256_Vector_Scalar :: struct {vector: [3]f64, scalar: f64}
 
 
 /*
@@ -692,7 +701,7 @@ default_assertion_failure_proc :: proc(prefix, message: string, loc: Source_Code
 	when ODIN_OS == .Freestanding {
 		// Do nothing
 	} else {
-		when !ODIN_DISABLE_ASSERT {
+		when ODIN_OS != .Orca && !ODIN_DISABLE_ASSERT {
 			print_caller_location(loc)
 			print_string(" ")
 		}
@@ -701,7 +710,18 @@ default_assertion_failure_proc :: proc(prefix, message: string, loc: Source_Code
 			print_string(": ")
 			print_string(message)
 		}
-		print_byte('\n')
+
+		when ODIN_OS == .Orca {
+			assert_fail(
+				cstring(raw_data(loc.file_path)),
+				cstring(raw_data(loc.procedure)),
+				loc.line,
+				"",
+				cstring(raw_data(orca_stderr_buffer[:orca_stderr_buffer_idx])),
+			)
+		} else {
+			print_byte('\n')
+		}
 	}
 	trap()
 }

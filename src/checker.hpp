@@ -133,6 +133,7 @@ struct AttributeContext {
 	bool    entry_point_only      : 1;
 	bool    instrumentation_enter : 1;
 	bool    instrumentation_exit  : 1;
+	bool    rodata                : 1;
 	u32 optimization_mode; // ProcedureOptimizationMode
 	i64 foreign_import_priority_index;
 	String extra_linker_flags;
@@ -336,7 +337,16 @@ struct ObjcMsgData {
 	ObjcMsgKind kind;
 	Type *proc_type;
 };
+
+enum LoadFileTier {
+	LoadFileTier_Invalid,
+	LoadFileTier_Exists,
+	LoadFileTier_Contents,
+};
+
 struct LoadFileCache {
+	LoadFileTier   tier;
+	bool           exists;
 	String         path;
 	gbFileError    file_error;
 	String         data;

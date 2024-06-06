@@ -3628,6 +3628,12 @@ gb_internal DECL_ATTRIBUTE_PROC(var_decl_attribute) {
 		}
 		ac->is_static = true;
 		return true;
+	} else if (name == "rodata") {
+		if (value != nullptr) {
+			error(elem, "'rodata' does not have any parameters");
+		}
+		ac->rodata = true;
+		return true;
 	} else if (name == "thread_local") {
 		ExactValue ev = check_decl_attribute_value(c, value);
 		if (ac->init_expr_list_count > 0) {
@@ -5852,35 +5858,6 @@ gb_internal void remove_neighbouring_duplicate_entires_from_sorted_array(Array<E
 gb_internal void check_test_procedures(Checker *c) {
 	array_sort(c->info.testing_procedures, init_procedures_cmp);
 	remove_neighbouring_duplicate_entires_from_sorted_array(&c->info.testing_procedures);
-
-	if (build_context.test_names.entries.count == 0) {
-		return;
-	}
-
-	AstPackage *pkg = c->info.init_package;
-	Scope *s = pkg->scope;
-
-	for (String const &name : build_context.test_names) {
-		Entity *e = scope_lookup(s, name);
-		if (e == nullptr) {
-			Token tok = {};
-			if (pkg->files.count != 0) {
-				tok = pkg->files[0]->tokens[0];
-			}
-			error(tok, "Unable to find the test '%.*s' in 'package %.*s' ", LIT(name), LIT(pkg->name));
-		}
-	}
-
-	for (isize i = 0; i < c->info.testing_procedures.count; /**/) {
-		Entity *e = c->info.testing_procedures[i];
-		String name = e->token.string;
-		if (!string_set_exists(&build_context.test_names, name)) {
-			array_ordered_remove(&c->info.testing_procedures, i);
-		} else {
-			i += 1;
-		}
-	}
-
 }
 
 

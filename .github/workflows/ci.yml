@@ -10,7 +10,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Build, Check, and Test
-      timeout-minutes: 25
+      timeout-minutes: 15
       uses: vmactions/netbsd-vm@v1
       with:
         release: "10.0"
@@ -24,16 +24,17 @@ jobs:
           /usr/sbin/pkg_add https://github.com/andreas-jonsson/llvm17-netbsd-bin/releases/download/pkgsrc-current/llvm-17.0.6.tgz
           /usr/sbin/pkg_add https://github.com/andreas-jonsson/llvm17-netbsd-bin/releases/download/pkgsrc-current/clang-17.0.6.tgz
           ln -s /usr/pkg/bin/python3.11 /usr/bin/python3
-          ln -s /usr/pkg/bin/bash /bin/bash
         run: |
           git config --global --add safe.directory $(pwd)
           gmake release
           ./odin version
           ./odin report
           ./odin check examples/all -vet -strict-style -target:netbsd_amd64
+          ./odin check examples/all -vet -strict-style -target:netbsd_arm64
           (cd tests/core; gmake all_bsd)
           (cd tests/internal; gmake all_bsd)
           (cd tests/issues; ./run.sh)
+          (cd tests/benchmark; gmake all)
   build_linux:
     name: Ubuntu Build, Check, and Test
     runs-on: ubuntu-latest
@@ -53,6 +54,12 @@ jobs:
       - name: Odin report
         run: ./odin report
         timeout-minutes: 1
+      - name: Compile needed Vendor
+        run: |
+          make -C $(./odin root)/vendor/stb/src
+          make -C $(./odin root)/vendor/cgltf/src
+          make -C $(./odin root)/vendor/miniaudio/src
+        timeout-minutes: 10
       - name: Odin check
         run: ./odin check examples/demo -vet
         timeout-minutes: 10
@@ -78,6 +85,11 @@ jobs:
       - name: Odin internals tests
         run: |
           cd tests/internal
+          make
+        timeout-minutes: 10
+      - name: Odin core library benchmarks
+        run: |
+          cd tests/benchmark
           make
         timeout-minutes: 10
       - name: Odin check examples/all for Linux i386
@@ -109,6 +121,12 @@ jobs:
       - name: Odin report
         run: ./odin report
         timeout-minutes: 1
+      - name: Compile needed Vendor
+        run: |
+          make -C $(./odin root)/vendor/stb/src
+          make -C $(./odin root)/vendor/cgltf/src
+          make -C $(./odin root)/vendor/miniaudio/src
+        timeout-minutes: 10
       - name: Odin check
         run: ./odin check examples/demo -vet
         timeout-minutes: 10
@@ -129,6 +147,11 @@ jobs:
       - name: Odin internals tests
         run: |
           cd tests/internal
+          make
+        timeout-minutes: 10
+      - name: Odin core library benchmarks
+        run: |
+          cd tests/benchmark
           make
         timeout-minutes: 10
   build_macOS_arm:
@@ -148,6 +171,12 @@ jobs:
       - name: Odin report
         run: ./odin report
         timeout-minutes: 1
+      - name: Compile needed Vendor
+        run: |
+          make -C $(./odin root)/vendor/stb/src
+          make -C $(./odin root)/vendor/cgltf/src
+          make -C $(./odin root)/vendor/miniaudio/src
+        timeout-minutes: 10
       - name: Odin check
         run: ./odin check examples/demo -vet
         timeout-minutes: 10
@@ -168,6 +197,11 @@ jobs:
       - name: Odin internals tests
         run: |
           cd tests/internal
+          make
+        timeout-minutes: 10
+      - name: Odin core library benchmarks
+        run: |
+          cd tests/benchmark
           make
         timeout-minutes: 10
   build_windows:
@@ -215,6 +249,13 @@ jobs:
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat
           cd tests\core
+          call build.bat
+        timeout-minutes: 10
+      - name: Core library benchmarks
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat
+          cd tests\benchmark
           call build.bat
         timeout-minutes: 10
       - name: Vendor library tests

@@ -8,6 +8,7 @@
 
 	A test suite for `core:net`
 */
+//+build !netbsd !freebsd !openbsd
 package test_core_net
 
 import "core:testing"

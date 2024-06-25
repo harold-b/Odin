@@ -1714,6 +1714,26 @@ gb_internal bool check_builtin_procedure_directive(CheckerContext *c, Operand *o
 
 		operand->type = t_untyped_bool;
 		operand->mode = Addressing_Constant;
+	} else if (name == "warning") {
+		ERROR_BLOCK();
+		if (ce->args.count != 1) {
+			error(call, "'#warning' expects 1 argument, got %td", ce->args.count);
+			return false;
+		}
+		if (!is_type_string(operand->type) && operand->mode != Addressing_Constant) {
+			gbString str = expr_to_string(ce->args[0]);
+			error(call, "'%s' is not a constant string", str);
+			gb_string_free(str);
+			return false;
+		}
+		warning(call, "%.*s", LIT(operand->value.value_string));
+		if (c->proc_name != "") {
+			gbString str = type_to_string(c->curr_proc_sig);
+			error_line("\tCalled within '%.*s' :: %s\n", LIT(c->proc_name), str);
+			gb_string_free(str);
+		}
+		operand->type = t_invalid;
+		operand->mode = Addressing_NoValue;
 	} else if (name == "panic") {
 		ERROR_BLOCK();
 		if (ce->args.count != 1) {
@@ -1756,9 +1776,21 @@ gb_internal bool check_builtin_procedure_directive(CheckerContext *c, Operand *o
 		operand->mode = Addressing_Constant;
 		operand->value = exact_value_bool(is_defined);
 
+		// If the arg is a selector expression we don't add it, `-define` only allows identifiers.
+		if (arg->kind == Ast_Ident) {
+			Defineable defineable    = {};
+			defineable.docs          = nullptr;
+			defineable.name          = arg->Ident.token.string;
+			defineable.default_value = exact_value_bool(false);
+			defineable.pos           = arg->Ident.token.pos;
+
+			MUTEX_GUARD(&c->info->defineables_mutex);
+			array_add(&c->info->defineables, defineable);
+		}
+
 	} else if (name == "config") {
 		if (ce->args.count != 2) {
-			error(call, "'#config' expects 2 argument, got %td", ce->args.count);
+			error(call, "'#config' expects 2 arguments, got %td", ce->args.count);
 			return false;
 		}
 		Ast *arg = unparen_expr(ce->args[0]);
@@ -1793,6 +1825,20 @@ gb_internal bool check_builtin_procedure_directive(CheckerContext *c, Operand *o
 				operand->value = found->Constant.value;
 			}
 		}
+
+		Defineable defineable    = {};
+		defineable.docs          = nullptr;
+		defineable.name          = name;
+		defineable.default_value = def.value;
+		defineable.pos           = arg->Ident.token.pos;
+
+		if (c->decl) {
+			defineable.docs = c->decl->docs;
+		}
+
+		MUTEX_GUARD(&c->info->defineables_mutex);
+		array_add(&c->info->defineables, defineable);
+
 	} else {
 		error(call, "Unknown directive call: #%.*s", LIT(name));
 	}
@@ -1843,6 +1889,7 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 	case BuiltinProc_objc_register_class: 
 	case BuiltinProc_atomic_type_is_lock_free:
 	case BuiltinProc_has_target_feature:
+	case BuiltinProc_procedure_of:
 		// NOTE(bill): The first arg may be a Type, this will be checked case by case
 		break;
 
@@ -2418,6 +2465,9 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 
 		if (arg_count > max_count) {
 			error(call, "Too many 'swizzle' indices, %td > %td", arg_count, max_count);
+			return false;
+		} else if (arg_count < 2) {
+			error(call, "Not enough 'swizzle' indices, %td < 2", arg_count);
 			return false;
 		}
 
@@ -5085,15 +5135,9 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 			isize max_arg_count = 32;
 			
 			switch (build_context.metrics.os) {
-			case TargetOs_windows:
-			case TargetOs_freestanding:
-				error(call, "'%.*s' is not supported on this platform (%.*s)", LIT(builtin_name), LIT(target_os_names[build_context.metrics.os]));
-				break;
 			case TargetOs_darwin:
 			case TargetOs_linux:
 			case TargetOs_essence:
-			case TargetOs_freebsd:
-			case TargetOs_openbsd:
 			case TargetOs_haiku:
 				switch (build_context.metrics.arch) {
 				case TargetArch_i386:
@@ -5102,6 +5146,9 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 					max_arg_count = 7;
 					break;
 				}
+				break;
+			default:
+				error(call, "'%.*s' is not supported on this platform (%.*s)", LIT(builtin_name), LIT(target_os_names[build_context.metrics.os]));
 				break;
 			}
 			
@@ -5113,6 +5160,55 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 			
 			operand->mode = Addressing_Value;
 			operand->type = t_uintptr;
+			return true;
+		}
+		break;
+	case BuiltinProc_syscall_bsd:
+		{
+			convert_to_typed(c, operand, t_uintptr);
+			if (!is_type_uintptr(operand->type)) {
+				gbString t = type_to_string(operand->type);
+				error(operand->expr, "Argument 0 must be of type 'uintptr', got %s", t);
+				gb_string_free(t);
+			}
+			for (isize i = 1; i < ce->args.count; i++) {
+				Operand x = {};
+				check_expr(c, &x, ce->args[i]);
+				if (x.mode != Addressing_Invalid) {
+					convert_to_typed(c, &x, t_uintptr);	
+				}
+				convert_to_typed(c, &x, t_uintptr);
+				if (!is_type_uintptr(x.type)) {
+					gbString t = type_to_string(x.type);
+					error(x.expr, "Argument %td must be of type 'uintptr', got %s", i, t);
+					gb_string_free(t);
+				}
+			}
+			
+			isize max_arg_count = 32;
+			
+			switch (build_context.metrics.os) {
+			case TargetOs_freebsd:
+			case TargetOs_netbsd:
+			case TargetOs_openbsd:
+				switch (build_context.metrics.arch) {
+				case TargetArch_amd64:
+				case TargetArch_arm64:
+					max_arg_count = 7;
+					break;
+				}
+				break;
+			default:
+				error(call, "'%.*s' is not supported on this platform (%.*s)", LIT(builtin_name), LIT(target_os_names[build_context.metrics.os]));
+				break;
+			}
+			
+			if (ce->args.count > max_arg_count) {
+				error(ast_end_token(call), "'%.*s' has a maximum of %td arguments on this platform (%.*s), got %td", LIT(builtin_name), max_arg_count, LIT(target_os_names[build_context.metrics.os]), ce->args.count);
+			}
+			
+			operand->mode = Addressing_Value;
+			operand->type = make_optional_ok_type(t_uintptr);
 			return true;
 		}
 		break;
@@ -5912,15 +6008,9 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 		if (operand->mode != Addressing_Type) {
 			error(operand->expr, "Expected a record type for '%.*s'", LIT(builtin_name));
 		} else {
-			Type *bt = base_type(operand->type);
-			if (bt->kind == Type_Struct) {
-				if (bt->Struct.polymorphic_params != nullptr) {
-					operand->value = exact_value_i64(bt->Struct.polymorphic_params->Tuple.variables.count);
-				}
-			} else if (bt->kind == Type_Union) {
-				if (bt->Union.polymorphic_params != nullptr) {
-					operand->value = exact_value_i64(bt->Union.polymorphic_params->Tuple.variables.count);
-				}
+			TypeTuple *tuple = get_record_polymorphic_params(operand->type);
+			if (tuple) {
+				operand->value = exact_value_i64(tuple->variables.count);
 			} else {
 				error(operand->expr, "Expected a record type for '%.*s'", LIT(builtin_name));
 			}
@@ -5952,20 +6042,11 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 			Entity *param = nullptr;
 			i64 count = 0;
 
-			Type *bt = base_type(operand->type);
-			if (bt->kind == Type_Struct) {
-				if (bt->Struct.polymorphic_params != nullptr) {
-					count = bt->Struct.polymorphic_params->Tuple.variables.count;
-					if (index < count) {
-						param = bt->Struct.polymorphic_params->Tuple.variables[cast(isize)index];
-					}
-				}
-			} else if (bt->kind == Type_Union) {
-				if (bt->Union.polymorphic_params != nullptr) {
-					count = bt->Union.polymorphic_params->Tuple.variables.count;
-					if (index < count) {
-						param = bt->Union.polymorphic_params->Tuple.variables[cast(isize)index];
-					}
+			TypeTuple *tuple = get_record_polymorphic_params(operand->type);
+			if (tuple) {
+				count = tuple->variables.count;
+				if (index < count) {
+					param = tuple->variables[cast(isize)index];
 				}
 			} else {
 				error(operand->expr, "Expected a specialized polymorphic record type for '%.*s'", LIT(builtin_name));
@@ -6166,6 +6247,51 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 
 			operand->mode = Addressing_Value;
 			operand->type = t_map_cell_info_ptr;
+			break;
+		}
+
+	case BuiltinProc_procedure_of:
+		{
+			Ast *call_expr = unparen_expr(ce->args[0]);
+			Operand op = {};
+			check_expr_base(c, &op, ce->args[0], nullptr);
+			if (op.mode != Addressing_Value && !(call_expr && call_expr->kind == Ast_CallExpr)) {
+				error(ce->args[0], "Expected a call expression for '%.*s'", LIT(builtin_name));
+				return false;
+			}
+
+			Ast *proc = call_expr->CallExpr.proc;
+			Entity *e = entity_of_node(proc);
+
+			if (e == nullptr) {
+				error(ce->args[0], "Invalid procedure value, expected a regular/specialized procedure");
+				return false;
+			}
+
+			TypeAndValue tav = proc->tav;
+
+
+			operand->type       = e->type;
+			operand->mode       = Addressing_Value;
+			operand->value      = tav.value;
+			operand->builtin_id = BuiltinProc_Invalid;
+			operand->proc_group = nullptr;
+
+			if (tav.mode == Addressing_Builtin) {
+				operand->mode = tav.mode;
+				operand->builtin_id = cast(BuiltinProcId)e->Builtin.id;
+				break;
+			}
+
+			if (!is_type_proc(e->type)) {
+				gbString s = type_to_string(e->type);
+				error(ce->args[0], "Expected a procedure value, got '%s'", s);
+				gb_string_free(s);
+				return false;
+			}
+
+
+			ce->entity_procedure_of = e;
 			break;
 		}
 

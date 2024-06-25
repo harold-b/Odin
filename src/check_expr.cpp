@@ -281,8 +281,20 @@ gb_internal void error_operand_not_expression(Operand *o) {
 
 gb_internal void error_operand_no_value(Operand *o) {
 	if (o->mode == Addressing_NoValue) {
-		gbString err = expr_to_string(o->expr);
 		Ast *x = unparen_expr(o->expr);
+
+		if (x->kind == Ast_CallExpr) {
+			Ast *p = unparen_expr(x->CallExpr.proc);
+			if (p->kind == Ast_BasicDirective) {
+				String tag = p->BasicDirective.name.string;
+				if (tag == "panic" ||
+				    tag == "assert") {
+					return;
+				}
+			}
+		}
+
+		gbString err = expr_to_string(o->expr);
 		if (x->kind == Ast_CallExpr) {
 			error(o->expr, "'%s' call does not return a value and cannot be used as a value", err);
 		} else {
@@ -566,6 +578,7 @@ gb_internal bool find_or_generate_polymorphic_procedure(CheckerContext *old_c, E
 	d->defer_use_checked = false;
 
 	Entity *entity = alloc_entity_procedure(nullptr, token, final_proc_type, tags);
+	entity->state.store(EntityState_Resolved);
 	entity->identifier = ident;
 
 	add_entity_and_decl_info(&nctx, ident, entity, d);
@@ -2537,7 +2550,7 @@ gb_internal void check_unary_expr(CheckerContext *c, Operand *o, Token op, Ast *
 									error_line("\tSuggestion: Did you want to pass the iterable value to the for statement by pointer to get addressable semantics?\n");
 								}
 
-								if (is_type_map(parent_type)) {
+								if (parent_type != nullptr && is_type_map(parent_type)) {
 									error_line("\t            Prefer doing 'for key, &%.*s in ...'\n", LIT(e->token.string));
 								} else {
 									error_line("\t            Prefer doing 'for &%.*s in ...'\n", LIT(e->token.string));
@@ -2593,6 +2606,11 @@ gb_internal void check_unary_expr(CheckerContext *c, Operand *o, Token op, Ast *
 	if (o->mode == Addressing_Constant) {
 		Type *type = base_type(o->type);
 		if (!is_type_constant_type(o->type)) {
+			if (is_type_array_like(o->type)) {
+				o->mode = Addressing_Value;
+				return;
+			}
+
 			gbString xt = type_to_string(o->type);
 			gbString err_str = expr_to_string(node);
 			error(op, "Invalid type, '%s', for constant unary expression '%s'", xt, err_str);
@@ -3338,6 +3356,9 @@ gb_internal void check_cast(CheckerContext *c, Operand *x, Type *type) {
 	if (is_type_untyped(x->type)) {
 		Type *final_type = type;
 		if (is_const_expr && !is_type_constant_type(type)) {
+			if (is_type_union(type)) {
+				convert_to_typed(c, x, type);
+			}
 			final_type = default_type(x->type);
 		}
 		update_untyped_expr_type(c, x->expr, final_type, true);
@@ -3548,6 +3569,9 @@ gb_internal void check_binary_matrix(CheckerContext *c, Token const &op, Operand
 
 				x->mode = Addressing_Value;
 				if (are_types_identical(xt, yt)) {
+					if (are_types_identical(x->type, y->type)) {
+						return;
+					}
 					if (!is_type_named(x->type) && is_type_named(y->type)) {
 						// prefer the named type
 						x->type = y->type;
@@ -4286,7 +4310,8 @@ gb_internal void convert_to_typed(CheckerContext *c, Operand *operand, Type *tar
 		} else {
 			switch (operand->type->Basic.kind) {
 			case Basic_UntypedBool:
-				if (!is_type_boolean(target_type)) {
+				if (!is_type_boolean(target_type) &&
+				    !is_type_integer(target_type)) {
 					operand->mode = Addressing_Invalid;
 					convert_untyped_error(c, operand, target_type);
 					return;
@@ -7331,14 +7356,9 @@ gb_internal CallArgumentError check_polymorphic_record_type(CheckerContext *c, O
 			gbString s = gb_string_make_reserve(heap_allocator(), e->token.string.len+3);
 			s = gb_string_append_fmt(s, "%.*s(", LIT(e->token.string));
 
-			Type *params = nullptr;
-			switch (bt->kind) {
-			case Type_Struct: params = bt->Struct.polymorphic_params; break;
-			case Type_Union:  params = bt->Union.polymorphic_params;  break;
-			}
-
-			if (params != nullptr) for_array(i, params->Tuple.variables) {
-				Entity *v = params->Tuple.variables[i];
+			TypeTuple *tuple = get_record_polymorphic_params(e->type);
+			if (tuple != nullptr) for_array(i, tuple->variables) {
+				Entity *v = tuple->variables[i];
 				String name = v->token.string;
 				if (i > 0) {
 					s = gb_string_append_fmt(s, ", ");
@@ -7661,7 +7681,7 @@ gb_internal ExprKind check_call_expr(CheckerContext *c, Operand *operand, Ast *c
 				if (decl->proc_lit) {
 					ast_node(pl, ProcLit, decl->proc_lit);
 					if (pl->inlining == ProcInlining_no_inline) {
-						error(call, "'#force_inline' cannot be applied to a procedure that has be marked as '#force_no_inline'");
+						error(call, "'#force_inline' cannot be applied to a procedure that has been marked as '#force_no_inline'");
 					}
 				}
 			}
@@ -8307,6 +8327,14 @@ gb_internal ExprKind check_basic_directive_expr(CheckerContext *c, Operand *o, A
 		}
 		o->type = t_untyped_string;
 		o->value = exact_value_string(file);
+	} else if (name == "directory") {
+		String file = get_file_path_string(bd->token.pos.file_id);
+		String path = dir_from_path(file);
+		if (build_context.obfuscate_source_code_locations) {
+			path = obfuscate_string(path, "D");
+		}
+		o->type = t_untyped_string;
+		o->value = exact_value_string(path);
 	} else if (name == "line") {
 		i32 line = bd->token.pos.line;
 		if (build_context.obfuscate_source_code_locations) {
@@ -8342,7 +8370,7 @@ gb_internal ExprKind check_basic_directive_expr(CheckerContext *c, Operand *o, A
 		    name == "assert" ||
 		    name == "defined" ||
 		    name == "config" ||
-			name == "exists" ||
+		    name == "exists" ||
 		    name == "load" ||
 		    name == "load_hash" ||
 		    name == "load_directory" ||
@@ -8699,7 +8727,7 @@ gb_internal ExprKind check_or_branch_expr(CheckerContext *c, Operand *o, Ast *no
 			// okay
 		} else {
 			gbString s = type_to_string(right_type);
-			error(node, "'%.*s' requires a boolean or nil-able type, got %s", s);
+			error(node, "'%.*s' requires a boolean or nil-able type, got %s", LIT(name), s);
 			gb_string_free(s);
 		}
 	}
@@ -9804,7 +9832,9 @@ gb_internal ExprKind check_compound_literal(CheckerContext *c, Operand *o, Ast *
 				if (tav.mode != Addressing_Constant) {
 					continue;
 				}
-				GB_ASSERT(tav.value.kind == ExactValue_Integer);
+				if (tav.value.kind != ExactValue_Integer) {
+					continue;
+				}
 				i64 v = big_int_to_i64(&tav.value.value_integer);
 				i64 lower = bt->BitSet.lower;
 				u64 index = cast(u64)(v-lower);

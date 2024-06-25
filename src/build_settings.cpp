@@ -844,6 +844,8 @@ struct BuildContext {
 	bool   show_unused;
 	bool   show_unused_with_location;
 	bool   show_more_timings;
+	bool   show_defineables;
+	String export_defineables_file;
 	bool   show_system_calls;
 	bool   keep_temp_files;
 	bool   ignore_unknown_attributes;
@@ -1137,6 +1139,14 @@ gb_global TargetMetrics target_freestanding_arm64 = {
 	str_lit("aarch64-none-elf"),
 };
 
+gb_global TargetMetrics target_freestanding_arm32 = {
+	TargetOs_freestanding,
+	TargetArch_arm32,
+	4, 4, 4, 8,
+	str_lit("arm-unknown-unknown-gnueabihf"),
+};
+
+
 struct NamedTargetMetrics {
 	String name;
 	TargetMetrics *metrics;
@@ -1179,6 +1189,7 @@ gb_global NamedTargetMetrics named_targets[] = {
 	{ str_lit("freestanding_amd64_win64"), &target_freestanding_amd64_win64 },
 
 	{ str_lit("freestanding_arm64"), &target_freestanding_arm64 },
+	{ str_lit("freestanding_arm32"), &target_freestanding_arm32 },
 };
 
 gb_global NamedTargetMetrics *selected_target_metrics;
@@ -2035,6 +2046,9 @@ gb_internal void init_build_context(TargetMetrics *cross_target, Subtarget subta
 			bc->link_flags = str_lit("/machine:x86 ");
 			break;
 		}
+	} else if (bc->metrics.os == TargetOs_darwin) {
+		bc->link_flags = concatenate3_strings(permanent_allocator(),
+			str_lit("-target "), bc->metrics.target_triplet, str_lit(" "));
 	} else if (is_arch_wasm()) {
 		gbString link_flags = gb_string_make(heap_allocator(), " ");
 		// link_flags = gb_string_appendc(link_flags, "--export-all ");
@@ -2052,8 +2066,13 @@ gb_internal void init_build_context(TargetMetrics *cross_target, Subtarget subta
 		// Disallow on wasm
 		bc->use_separate_modules = false;
 	} else {
-		bc->link_flags = concatenate3_strings(permanent_allocator(),
-			str_lit("-target "), bc->metrics.target_triplet, str_lit(" "));
+		// NOTE: for targets other than darwin, we don't specify a `-target` link flag.
+		// This is because we don't support cross-linking and clang is better at figuring
+		// out what the actual target for linking is,
+		// for example, on x86/alpine/musl it HAS to be `x86_64-alpine-linux-musl` to link correctly.
+		//
+		// Note that codegen will still target the triplet we specify, but the intricate details of
+		// a target shouldn't matter as much to codegen (if it does at all) as it does to linking.
 	}
 
 	// NOTE: needs to be done after adding the -target flag to the linker flags so the linker

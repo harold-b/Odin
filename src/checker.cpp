@@ -3,6 +3,8 @@
 #include "entity.cpp"
 #include "types.cpp"
 
+String get_final_microarchitecture();
+
 gb_internal void check_expr(CheckerContext *c, Operand *operand, Ast *expression);
 gb_internal void check_expr_or_type(CheckerContext *c, Operand *operand, Ast *expression, Type *type_hint=nullptr);
 gb_internal void add_comparison_procedures_for_fields(CheckerContext *c, Type *t);
@@ -1040,6 +1042,8 @@ gb_internal void init_universal(void) {
 		add_global_enum_constant(fields, "ODIN_ARCH", bc->metrics.arch);
 		add_global_string_constant("ODIN_ARCH_STRING", target_arch_names[bc->metrics.arch]);
 	}
+
+	add_global_string_constant("ODIN_MICROARCH_STRING", get_final_microarchitecture());
 	
 	{
 		GlobalEnumValue values[BuildMode_COUNT] = {
@@ -1131,6 +1135,17 @@ gb_internal void init_universal(void) {
 	add_global_constant("ODIN_COMPILE_TIMESTAMP", t_untyped_integer, exact_value_i64(odin_compile_timestamp()));
 
 	{
+		String version = {};
+
+		#ifdef GIT_SHA
+		version.text = cast(u8 *)GIT_SHA;
+		version.len = gb_strlen(GIT_SHA);
+		#endif
+
+		add_global_string_constant("ODIN_VERSION_HASH", version);
+	}
+
+	{
 		bool f16_supported = lb_use_new_pass_system();
 		if (is_arch_wasm()) {
 			f16_supported = false;
@@ -1167,6 +1182,18 @@ gb_internal void init_universal(void) {
 		add_global_constant("ODIN_SANITIZER_FLAGS", named_type, exact_value_u64(bc->sanitizer_flags));
 	}
 
+	{
+		GlobalEnumValue values[5] = {
+			{"None",      -1},
+			{"Minimal",    0},
+			{"Size",       1},
+			{"Speed",      2},
+			{"Aggressive", 3},
+		};
+
+		auto fields = add_global_enum_type(str_lit("Odin_Optimization_Mode"), values, gb_count_of(values));
+		add_global_enum_constant(fields, "ODIN_OPTIMIZATION_MODE", bc->optimization_level);
+	}
 
 
 // Builtin Procedures
@@ -1275,6 +1302,7 @@ gb_internal void init_checker_info(CheckerInfo *i) {
 	array_init(&i->init_procedures, a, 0, 0);
 	array_init(&i->fini_procedures, a, 0, 0);
 	array_init(&i->required_foreign_imports_through_force, a, 0, 0);
+	array_init(&i->defineables, a);
 
 	map_init(&i->objc_msgSend_types);
 	string_map_init(&i->load_file_cache);
@@ -1304,6 +1332,7 @@ gb_internal void destroy_checker_info(CheckerInfo *i) {
 	string_map_destroy(&i->packages);
 	array_free(&i->variable_init_order);
 	array_free(&i->required_foreign_imports_through_force);
+	array_free(&i->defineables);
 
 	mpsc_destroy(&i->entity_queue);
 	mpsc_destroy(&i->definition_queue);
@@ -1451,6 +1480,10 @@ gb_internal Entity *entity_of_node(Ast *expr) {
 	case_end;
 	case_ast_node(cc, CaseClause, expr);
 		return cc->implicit_entity;
+	case_end;
+
+	case_ast_node(ce, CallExpr, expr);
+		return ce->entity_procedure_of;
 	case_end;
 	}
 	return nullptr;
@@ -4079,6 +4112,7 @@ gb_internal void check_collect_value_decl(CheckerContext *c, Ast *decl) {
 	bool is_test = false;
 	bool is_init = false;
 	bool is_fini = false;
+	bool is_priv = false;
 
 	for_array(i, vd->attributes) {
 		Ast *attr = vd->attributes[i];
@@ -4123,6 +4157,8 @@ gb_internal void check_collect_value_decl(CheckerContext *c, Ast *decl) {
 				}
 				if (!success) {
 					error(value, "'%.*s' expects no parameter, or a string literal containing \"file\" or \"package\"", LIT(name));
+				} else {
+					is_priv = true;
 				}
 
 
@@ -4142,6 +4178,11 @@ gb_internal void check_collect_value_decl(CheckerContext *c, Ast *decl) {
 				is_fini = true;
 			}
 		}
+	}
+
+	if (is_priv && is_test) {
+		error(decl, "Attribute 'private' is not allowed on a test case");
+		return;
 	}
 
 	if (entity_visibility_kind == EntityVisiblity_Public &&

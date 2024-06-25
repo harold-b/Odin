@@ -192,6 +192,7 @@ BuiltinProc__simd_end,
 	
 	// Platform specific intrinsics
 	BuiltinProc_syscall,
+	BuiltinProc_syscall_bsd,
 
 	BuiltinProc_x86_cpuid,
 	BuiltinProc_x86_xgetbv,
@@ -298,6 +299,8 @@ BuiltinProc__type_simple_boolean_end,
 	BuiltinProc_type_map_cell_info,
 
 BuiltinProc__type_end,
+
+	BuiltinProc_procedure_of,
 
 	BuiltinProc___entry_point,
 
@@ -510,7 +513,8 @@ gb_global BuiltinProc builtin_procs[BuiltinProc_COUNT] = {
 	{STR_LIT(""), 0, false, Expr_Stmt, BuiltinProcPkg_intrinsics},
 
 
-	{STR_LIT("syscall"), 1, true, Expr_Expr, BuiltinProcPkg_intrinsics, false, true},
+	{STR_LIT("syscall"),     1, true, Expr_Expr, BuiltinProcPkg_intrinsics, false, true},
+	{STR_LIT("syscall_bsd"), 1, true, Expr_Expr, BuiltinProcPkg_intrinsics, false, true},
 	{STR_LIT("x86_cpuid"),  2, false, Expr_Expr, BuiltinProcPkg_intrinsics},
 	{STR_LIT("x86_xgetbv"), 1, false, Expr_Expr, BuiltinProcPkg_intrinsics},
 
@@ -613,6 +617,8 @@ gb_global BuiltinProc builtin_procs[BuiltinProc_COUNT] = {
 
 
 	{STR_LIT(""), 0, false, Expr_Stmt, BuiltinProcPkg_intrinsics},
+
+	{STR_LIT("procedure_of"), 1, false, Expr_Expr, BuiltinProcPkg_intrinsics},
 
 	{STR_LIT("__entry_point"), 0, false, Expr_Stmt, BuiltinProcPkg_intrinsics},
 

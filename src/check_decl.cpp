@@ -88,11 +88,17 @@ gb_internal Type *check_init_variable(CheckerContext *ctx, Entity *e, Operand *o
 			e->type = t_invalid;
 			return nullptr;
 		} else if (is_type_polymorphic(t)) {
-			gbString str = type_to_string(t);
-			defer (gb_string_free(str));
-			error(e->token, "Invalid use of a polymorphic type '%s' in %.*s", str, LIT(context_name));
-			e->type = t_invalid;
-			return nullptr;
+			Entity *e = entity_of_node(operand->expr);
+			if (e == nullptr) {
+				return nullptr;
+			}
+			if (e->state.load() != EntityState_Resolved) {
+				gbString str = type_to_string(t);
+				defer (gb_string_free(str));
+				error(e->token, "Invalid use of a polymorphic type '%s' in %.*s", str, LIT(context_name));
+				e->type = t_invalid;
+				return nullptr;
+			}
 		} else if (is_type_empty_union(t)) {
 			gbString str = type_to_string(t);
 			defer (gb_string_free(str));
@@ -479,6 +485,9 @@ gb_internal void check_const_decl(CheckerContext *ctx, Entity *e, Ast *type_expr
 			entity = check_selector(ctx, &operand, init, e->type);
 		} else {
 			check_expr_or_type(ctx, &operand, init, e->type);
+			if (init->kind == Ast_CallExpr) {
+				entity = init->CallExpr.entity_procedure_of;
+			}
 		}
 
 		switch (operand.mode) {
@@ -525,6 +534,7 @@ gb_internal void check_const_decl(CheckerContext *ctx, Entity *e, Ast *type_expr
 			e->ProcGroup.entities = array_clone(heap_allocator(), operand.proc_group->ProcGroup.entities);
 			return;
 		}
+
 
 		if (entity != nullptr) {
 			if (e->type != nullptr) {
@@ -1067,7 +1077,7 @@ gb_internal void check_proc_decl(CheckerContext *ctx, Entity *e, DeclInfo *d) {
 	}
 
 
-	if (e->pkg != nullptr && e->token.string == "main") {
+	if (e->pkg != nullptr && e->token.string == "main" && !build_context.no_entry_point) {
 		if (e->pkg->kind != Package_Runtime) {
 			if (pt->param_count != 0 ||
 			    pt->result_count != 0) {
@@ -1135,7 +1145,14 @@ gb_internal void check_proc_decl(CheckerContext *ctx, Entity *e, DeclInfo *d) {
 	}
 
 	if (ac.link_name.len > 0) {
-		e->Procedure.link_name = ac.link_name;
+		String ln = ac.link_name;
+		e->Procedure.link_name = ln;
+		if (ln == "memcpy" ||
+		    ln == "memmove" ||
+		    ln == "mem_copy" ||
+		    ln == "mem_copy_non_overlapping") {
+			e->Procedure.is_memcpy_like = true;
+		}
 	}
 
 	if (ac.deferred_procedure.entity != nullptr) {

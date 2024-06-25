@@ -390,8 +390,6 @@ gb_internal void error_va(TokenPos const &pos, TokenPos end, char const *fmt, va
 			error_out_empty();
 		} else {
 			error_out_pos(pos);
-		}
-		if (has_ansi_terminal_colours()) {
 			error_out_coloured("Error: ", TerminalStyle_Normal, TerminalColour_Red);
 		}
 		error_out_va(fmt, va);
@@ -427,8 +425,8 @@ gb_internal void warning_va(TokenPos const &pos, TokenPos end, char const *fmt, 
 			error_out_empty();
 		} else {
 			error_out_pos(pos);
+			error_out_coloured("Warning: ", TerminalStyle_Normal, TerminalColour_Yellow);
 		}
-		error_out_coloured("Warning: ", TerminalStyle_Normal, TerminalColour_Yellow);
 		error_out_va(fmt, va);
 		error_out("\n");
 		show_error_on_line(pos, end);
@@ -518,7 +516,7 @@ gb_internal void syntax_error_with_verbose_va(TokenPos const &pos, TokenPos end,
 
 	if (pos.line == 0) {
 		error_out_empty();
-		error_out_coloured("Syntax_Error: ", TerminalStyle_Normal, TerminalColour_Red);
+		error_out_coloured("Syntax Error: ", TerminalStyle_Normal, TerminalColour_Red);
 		error_out_va(fmt, va);
 		error_out("\n");
 	} else {
@@ -529,7 +527,7 @@ gb_internal void syntax_error_with_verbose_va(TokenPos const &pos, TokenPos end,
 			error_out_pos(pos);
 		}
 		if (has_ansi_terminal_colours()) {
-			error_out_coloured("Syntax_Error: ", TerminalStyle_Normal, TerminalColour_Red);
+			error_out_coloured("Syntax Error: ", TerminalStyle_Normal, TerminalColour_Red);
 		}
 		error_out_va(fmt, va);
 		error_out("\n");

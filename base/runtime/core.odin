@@ -397,11 +397,34 @@ Logger :: struct {
 	options:      Logger_Options,
 }
 
+
+Random_Generator_Mode :: enum {
+	Read,
+	Reset,
+	Query_Info,
+}
+
+Random_Generator_Query_Info_Flag :: enum u32 {
+	Cryptographic,
+	Uniform,
+	External_Entropy,
+	Resettable,
+}
+Random_Generator_Query_Info :: distinct bit_set[Random_Generator_Query_Info_Flag; u32]
+
+Random_Generator_Proc :: #type proc(data: rawptr, mode: Random_Generator_Mode, p: []byte)
+
+Random_Generator :: struct {
+	procedure: Random_Generator_Proc,
+	data:      rawptr,
+}
+
 Context :: struct {
 	allocator:              Allocator,
 	temp_allocator:         Allocator,
 	assertion_failure_proc: Assertion_Failure_Proc,
 	logger:                 Logger,
+	random_generator:       Random_Generator,
 
 	user_ptr:   rawptr,
 	user_index: int,
@@ -560,6 +583,19 @@ Odin_Platform_Subtarget_Type :: type_of(ODIN_PLATFORM_SUBTARGET)
 */
 Odin_Sanitizer_Flags :: type_of(ODIN_SANITIZER_FLAGS)
 
+/*
+	// Defined internally by the compiler
+	Odin_Optimization_Mode :: enum int {
+		None       = -1,
+		Minimal    =  0,
+		Size       =  1,
+		Speed      =  2,
+		Aggressive =  3,
+	}
+
+	ODIN_OPTIMIZATION_MODE // is a constant
+*/
+Odin_Optimization_Mode :: type_of(ODIN_OPTIMIZATION_MODE)
 
 /////////////////////////////
 // Init Startup Procedures //
@@ -695,6 +731,9 @@ __init_context :: proc "contextless" (c: ^Context) {
 
 	c.logger.procedure = default_logger_proc
 	c.logger.data = nil
+
+	c.random_generator.procedure = default_random_generator_proc
+	c.random_generator.data = nil
 }
 
 default_assertion_failure_proc :: proc(prefix, message: string, loc: Source_Code_Location) -> ! {

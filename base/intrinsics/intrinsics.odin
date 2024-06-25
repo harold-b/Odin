@@ -73,6 +73,8 @@ expect :: proc(val, expected_val: T) -> T ---
 
 // Linux and Darwin Only
 syscall :: proc(id: uintptr, args: ..uintptr) -> uintptr ---
+// FreeBSD, NetBSD, et cetera
+syscall_bsd :: proc(id: uintptr, args: ..uintptr) -> (uintptr, bool) ---
 
 
 // Atomics
@@ -294,6 +296,10 @@ simd_rotate_right :: proc(a: #simd[N]T, $offset: int) -> #simd[N]T ---
 // `@(require_target_feature)` or `@(enable_target_feature)` as its input and returns a boolean indicating
 // if all listed features are supported.
 has_target_feature :: proc($test: $T) -> bool where type_is_string(T) || type_is_proc(T) ---
+
+
+// Returns the value of the procedure where `x` must be a call expression
+procedure_of :: proc(x: $T) -> T where type_is_proc(T) ---
 
 // WASM targets only
 wasm_memory_grow :: proc(index, delta: uintptr) -> int ---

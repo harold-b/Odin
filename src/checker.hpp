@@ -51,6 +51,12 @@ enum StmtFlag {
 enum BuiltinProcPkg {
 	BuiltinProcPkg_builtin,
 	BuiltinProcPkg_intrinsics,
+	BuiltinProcPkg_COUNT
+};
+
+String builtin_proc_pkg_name[BuiltinProcPkg_COUNT] = {
+	str_lit("builtin"),
+	str_lit("intrinsics"),
 };
 
 struct BuiltinProc {
@@ -376,6 +382,17 @@ struct GenTypesData {
 	RecursiveMutex  mutex;
 };
 
+struct Defineable {
+	String        name;
+	ExactValue    default_value;
+	TokenPos      pos;
+	CommentGroup *docs;
+
+	// These strings are only computed from previous fields when defineables are being shown or exported.
+	String default_value_str;
+	String pos_str;
+};
+
 // CheckerInfo stores all the symbol information for a type-checked program
 struct CheckerInfo {
 	Checker *checker;
@@ -401,6 +418,9 @@ struct CheckerInfo {
 	Array<Entity *> definitions;
 	Array<Entity *> entities;
 	Array<Entity *> required_foreign_imports_through_force;
+
+	BlockingMutex     defineables_mutex;
+	Array<Defineable> defineables;
 
 
 	// Below are accessed within procedures

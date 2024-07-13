@@ -17,6 +17,8 @@ when LIB != "" {
 	}
 
 	foreign import stbtt { LIB }
+} else when ODIN_ARCH == .wasm32 || ODIN_ARCH == .wasm64p32 {
+	foreign import stbtt "../lib/stb_truetype_wasm.o"
 } else {
 	foreign import stbtt "system:stb_truetype"
 }
@@ -566,7 +568,7 @@ foreign stbtt {
 	// some of the values for the IDs are below; for more see the truetype spec:
 	//     http://developer.apple.com/textfonts/TTRefMan/RM06/Chap6name.html
 	//     http://www.microsoft.com/typography/otspec/name.htm
-	GetFontNameString :: proc(font: ^fontinfo, length: c.int, platformID: PLATFORM_ID, encodingID, languageID, nameID: c.int) -> cstring ---
+	GetFontNameString :: proc(font: ^fontinfo, length: ^c.int, platformID: PLATFORM_ID, encodingID, languageID, nameID: c.int) -> cstring ---
 }
 
 

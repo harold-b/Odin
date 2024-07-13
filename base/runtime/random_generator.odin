@@ -83,13 +83,13 @@ default_random_generator_proc :: proc(data: rawptr, mode: Random_Generator_Mode,
 	switch mode {
 	case .Read:
 		if r.state == 0 && r.inc == 0 {
-		   	init(r, 0)
+			init(r, 0)
 		}
 
 		switch len(p) {
 		case size_of(u64):
 			// Fast path for a 64-bit destination.
-			intrinsics.unaligned_store(transmute(^u64)raw_data(p), read_u64(r))
+			intrinsics.unaligned_store((^u64)(raw_data(p)), read_u64(r))
 		case:
 			// All other cases.
 			pos := i8(0)
@@ -108,7 +108,7 @@ default_random_generator_proc :: proc(data: rawptr, mode: Random_Generator_Mode,
 	case .Reset:
 		seed: u64
 		mem_copy_non_overlapping(&seed, raw_data(p), min(size_of(seed), len(p)))
-	   	init(r, seed)
+		init(r, seed)
 
 	case .Query_Info:
 		if len(p) != size_of(Random_Generator_Query_Info) {

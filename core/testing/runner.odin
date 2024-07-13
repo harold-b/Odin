@@ -51,12 +51,11 @@ get_log_level :: #force_inline proc() -> runtime.Logger_Level {
 		// Always use .Debug in `-debug` mode.
 		return .Debug
 	} else {
-		when LOG_LEVEL == "debug"        { return .Debug   }
-		else when LOG_LEVEL == "info"    { return .Info    }
-		else when LOG_LEVEL == "warning" { return .Warning }
-		else when LOG_LEVEL == "error"   { return .Error   }
-		else when LOG_LEVEL == "fatal"   { return .Fatal   }
-		else {
+		when LOG_LEVEL == "debug"   { return .Debug   } else
+		when LOG_LEVEL == "info"    { return .Info    } else
+		when LOG_LEVEL == "warning" { return .Warning } else
+		when LOG_LEVEL == "error"   { return .Error   } else
+		when LOG_LEVEL == "fatal"   { return .Fatal   } else {
 			#panic("Unknown `ODIN_TEST_LOG_LEVEL`: \"" + LOG_LEVEL + "\", possible levels are: \"debug\", \"info\", \"warning\", \"error\", or \"fatal\".")
 		}
 	}
@@ -198,8 +197,11 @@ runner :: proc(internal_tests: []Internal_Test) -> bool {
 			}
 		}
 
+		// `-vet` needs parameters to be shadowed by themselves first as an
+		// explicit declaration, to allow the next line to work.
+		internal_tests := internal_tests
 		// Intentional shadow with user-specified tests.
-		internal_tests := select_internal_tests[:]
+		internal_tests = select_internal_tests[:]
 	}
 
 	total_failure_count := 0

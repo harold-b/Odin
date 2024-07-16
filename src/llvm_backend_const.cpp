@@ -338,6 +338,15 @@ gb_internal lbValue lb_emit_source_code_location_as_global_ptr(lbProcedure *p, S
 	return addr.addr;
 }
 
+gb_internal lbValue lb_const_source_code_location_as_global_ptr(lbModule *m, String const &procedure, TokenPos const &pos) {
+	lbValue loc = lb_const_source_code_location_const(m, procedure, pos);
+	lbAddr addr = lb_add_global_generated(m, loc.type, loc, nullptr);
+	lb_make_global_private_const(addr);
+	return addr.addr;
+}
+
+
+
 
 gb_internal lbValue lb_emit_source_code_location_as_global_ptr(lbProcedure *p, Ast *node) {
 	lbValue loc = lb_emit_source_code_location_const(p, node);
@@ -424,6 +433,8 @@ gb_internal LLVMValueRef lb_big_int_to_llvm(lbModule *m, Type *original_type, Bi
 			rop[sz-1-i] = tmp;
 		}
 	}
+
+	GB_ASSERT(!is_type_array(original_type));
 
 	LLVMValueRef value = LLVMConstIntOfArbitraryPrecision(lb_type(m, original_type), cast(unsigned)((sz+7)/8), cast(u64 *)rop);
 	if (big_int_is_neg(a)) {

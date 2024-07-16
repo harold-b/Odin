@@ -112,17 +112,17 @@ gb_internal isize ast_node_size(AstKind kind) {
 
 }
 
-gb_global std::atomic<isize> global_total_node_memory_allocated;
+// gb_global std::atomic<isize> global_total_node_memory_allocated;
 
 // NOTE(bill): And this below is why is I/we need a new language! Discriminated unions are a pain in C/C++
 gb_internal Ast *alloc_ast_node(AstFile *f, AstKind kind) {
 	isize size = ast_node_size(kind);
 
-	Ast *node = cast(Ast *)arena_alloc(&global_thread_local_ast_arena, size, 16);
+	Ast *node = cast(Ast *)arena_alloc(get_arena(ThreadArena_Permanent), size, 16);
 	node->kind = kind;
 	node->file_id = f ? f->id : 0;
 
-	global_total_node_memory_allocated.fetch_add(size);
+	// global_total_node_memory_allocated.fetch_add(size);
 
 	return node;
 }
@@ -4014,6 +4014,7 @@ struct ParseFieldPrefixMapping {
 gb_global ParseFieldPrefixMapping const parse_field_prefix_mappings[] = {
 	{str_lit("using"),        Token_using,     FieldFlag_using},
 	{str_lit("no_alias"),     Token_Hash,      FieldFlag_no_alias},
+	{str_lit("no_capture"),   Token_Hash,      FieldFlag_no_capture},
 	{str_lit("c_vararg"),     Token_Hash,      FieldFlag_c_vararg},
 	{str_lit("const"),        Token_Hash,      FieldFlag_const},
 	{str_lit("any_int"),      Token_Hash,      FieldFlag_any_int},
@@ -5412,7 +5413,7 @@ gb_internal ParseFileError init_ast_file(AstFile *f, String const &fullpath, Tok
 	if (!string_ends_with(f->fullpath, str_lit(".odin"))) {
 		return ParseFile_WrongExtension;
 	}
-	zero_item(&f->tokenizer);
+	gb_zero_item(&f->tokenizer);
 	f->tokenizer.curr_file_id = f->id;
 
 	TokenizerInitError err = init_tokenizer_from_fullpath(&f->tokenizer, f->fullpath, build_context.copy_file_contents);

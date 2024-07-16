@@ -939,22 +939,6 @@ gb_internal void check_enum_type(CheckerContext *ctx, Type *enum_type, Type *nam
 	enum_type->Enum.max_value_index = max_value_index;
 }
 
-gb_internal bool is_valid_bit_field_backing_type(Type *type) {
-	if (type == nullptr) {
-		return false;
-	}
-	type = base_type(type);
-	if (is_type_untyped(type)) {
-		return false;
-	}
-	if (is_type_integer(type)) {
-		return true;
-	}
-	if (type->kind == Type_Array) {
-		return is_type_integer(type->Array.elem);
-	}
-	return false;
-}
 
 gb_internal void check_bit_field_type(CheckerContext *ctx, Type *bit_field_type, Type *named_type, Ast *node) {
 	ast_node(bf, BitFieldType, node);
@@ -1268,11 +1252,14 @@ gb_internal void check_bit_set_type(CheckerContext *c, Type *type, Type *named_t
 		Type *t = default_type(lhs.type);
 		if (bs->underlying != nullptr) {
 			Type *u = check_type(c, bs->underlying);
+			// if (!is_valid_bit_field_backing_type(u)) {
 			if (!is_type_integer(u)) {
 				gbString ts = type_to_string(u);
 				error(bs->underlying, "Expected an underlying integer for the bit set, got %s", ts);
 				gb_string_free(ts);
-				return;
+				if (!is_valid_bit_field_backing_type(u)) {
+					return;
+				}
 			}
 			type->BitSet.underlying = u;
 		}
@@ -1953,6 +1940,10 @@ gb_internal Type *check_get_params(CheckerContext *ctx, Scope *scope, Ast *_para
 					error(name, "'#by_ptr' can only be applied to variable fields");
 					p->flags &= ~FieldFlag_by_ptr;
 				}
+				if (p->flags&FieldFlag_no_capture) {
+					error(name, "'#no_capture' can only be applied to variable fields");
+					p->flags &= ~FieldFlag_no_capture;
+				}
 
 				param = alloc_entity_type_name(scope, name->Ident.token, type, EntityState_Resolved);
 				param->TypeName.is_type_alias = true;
@@ -2054,6 +2045,28 @@ gb_internal Type *check_get_params(CheckerContext *ctx, Scope *scope, Ast *_para
 						p->flags &= ~FieldFlag_by_ptr; // Remove the flag
 					}
 				}
+				if (p->flags&FieldFlag_no_capture) {
+					if (is_variadic && variadic_index == variables.count) {
+						if (p->flags & FieldFlag_c_vararg) {
+							error(name, "'#no_capture' cannot be applied to a #c_vararg parameter");
+							p->flags &= ~FieldFlag_no_capture;
+						} else {
+							error(name, "'#no_capture' is already implied on all variadic parameter");
+						}
+					} else if (is_type_polymorphic(type)) {
+						// ignore
+					} else {
+						if (is_type_internally_pointer_like(type)) {
+							error(name, "'#no_capture' is currently reserved for future use");
+						} else {
+							ERROR_BLOCK();
+							error(name, "'#no_capture' can only be applied to pointer-like types");
+							error_line("\t'#no_capture' does not currently do anything useful\n");
+							p->flags &= ~FieldFlag_no_capture;
+						}
+					}
+				}
+
 
 				if (is_poly_name) {
 					if (p->flags&FieldFlag_no_alias) {
@@ -2072,6 +2085,11 @@ gb_internal Type *check_get_params(CheckerContext *ctx, Scope *scope, Ast *_para
 						error(name, "'#by_ptr' can only be applied to variable fields");
 						p->flags &= ~FieldFlag_by_ptr;
 					}
+					if (p->flags&FieldFlag_no_capture) {
+						error(name, "'#no_capture' can only be applied to variable fields");
+						p->flags &= ~FieldFlag_no_capture;
+					}
+
 
 					if (!is_type_polymorphic(type) && check_constant_parameter_value(type, params[i])) {
 						// failed
@@ -2091,6 +2109,8 @@ gb_internal Type *check_get_params(CheckerContext *ctx, Scope *scope, Ast *_para
 				param->flags |= EntityFlag_Ellipsis;
 				if (is_c_vararg) {
 					param->flags |= EntityFlag_CVarArg;
+				} else {
+					param->flags |= EntityFlag_NoCapture;
 				}
 			}
 
@@ -2115,6 +2135,10 @@ gb_internal Type *check_get_params(CheckerContext *ctx, Scope *scope, Ast *_para
 			if (p->flags&FieldFlag_by_ptr) {
 				param->flags |= EntityFlag_ByPtr;
 			}
+			if (p->flags&FieldFlag_no_capture) {
+				param->flags |= EntityFlag_NoCapture;
+			}
+
 
 			param->state = EntityState_Resolved; // NOTE(bill): This should have be resolved whilst determining it
 			add_entity(ctx, scope, name, param);

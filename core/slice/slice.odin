@@ -160,8 +160,26 @@ binary_search :: proc(array: $A/[]$T, key: T) -> (index: int, found: bool)
 	return binary_search_by(array, key, cmp_proc(T))
 }
 
+/*
+	Binary search searches the given slice for the given element.
+	If the slice is not sorted, the returned index is unspecified and meaningless.
+
+	If the value is found then the returned int is the index of the matching element.
+	If there are multiple matches, then any one of the matches could be returned.
+
+	If the value is not found then the returned int is the index where a matching
+	element could be inserted while maintaining sorted order.
+
+	The array elements and key may be different types. This allows the filter procedure
+	to compare keys against a slice of structs, one struct value at a time.
+
+	Returns:
+	index: int
+	found: bool
+
+*/
 @(require_results)
-binary_search_by :: proc(array: $A/[]$T, key: T, f: proc(T, T) -> Ordering) -> (index: int, found: bool) #no_bounds_check {
+binary_search_by :: proc(array: $A/[]$T, key: $K, f: proc(T, K) -> Ordering) -> (index: int, found: bool) #no_bounds_check {
 	n := len(array)
 	left, right := 0, n
 	for left < right {
@@ -173,8 +191,6 @@ binary_search_by :: proc(array: $A/[]$T, key: T, f: proc(T, T) -> Ordering) -> (
 			right = mid
 		}
 	}
-	// left == right
-	// f(array[left-1], key) == .Less (if left > 0)
 	return left, left < n && f(array[left], key) == .Equal
 }
 
@@ -184,6 +200,17 @@ equal :: proc(a, b: $T/[]$E) -> bool where intrinsics.type_is_comparable(E) #no_
 		return false
 	}
 	when intrinsics.type_is_simple_compare(E) {
+		if len(a) == 0 {
+			// Empty slices are always equivalent to each other.
+			//
+			// This check is here in the event that a slice with a `data` of
+			// nil is compared against a slice with a non-nil `data` but a
+			// length of zero.
+			//
+			// In that case, `memory_compare` would return -1 or +1 because one
+			// of the pointers is nil.
+			return true
+		}
 		return runtime.memory_compare(raw_data(a), raw_data(b), len(a)*size_of(E)) == 0
 	} else {
 		for i in 0..<len(a) {

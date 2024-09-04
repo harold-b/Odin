@@ -23,6 +23,14 @@ error() {
 	exit 1
 }
 
+# Brew advises people not to add llvm to their $PATH, so try and use brew to find it.
+if [ -z "$LLVM_CONFIG" ] &&  [ -n "$(command -v brew)" ]; then
+    if   [ -n "$(command -v $(brew --prefix llvm@18)/bin/llvm-config)" ]; then LLVM_CONFIG="$(brew --prefix llvm@18)/bin/llvm-config"
+    elif [ -n "$(command -v $(brew --prefix llvm@17)/bin/llvm-config)" ]; then LLVM_CONFIG="$(brew --prefix llvm@17)/bin/llvm-config"
+    elif [ -n "$(command -v $(brew --prefix llvm@14)/bin/llvm-config)" ]; then LLVM_CONFIG="$(brew --prefix llvm@14)/bin/llvm-config"
+    fi
+fi
+
 if [ -z "$LLVM_CONFIG" ]; then
 	# darwin, linux, openbsd
 	if   [ -n "$(command -v llvm-config-18)" ]; then LLVM_CONFIG="llvm-config-18"
@@ -95,7 +103,7 @@ Linux)
 	LDFLAGS="$LDFLAGS -ldl $($LLVM_CONFIG --libs core native --system-libs --libfiles)"
 	# Copy libLLVM*.so into current directory for linking
 	# NOTE: This is needed by the Linux release pipeline!
-	cp $(readlink -f $($LLVM_CONFIG --libfiles)) ./
+	# cp $(readlink -f $($LLVM_CONFIG --libfiles)) ./
 	LDFLAGS="$LDFLAGS -Wl,-rpath=\$ORIGIN"
 	;;
 OpenBSD)
@@ -145,12 +153,17 @@ build_odin() {
 
 run_demo() {
 	return
-	./odin run examples/demo -vet -strict-style -- Hellope World
+	if [ $# -eq 0 ] || [ "$1" = "debug" ]; then
+		./odin run examples/demo -vet -strict-style -- Hellope World
+	fi
 }
 
 if [ $# -eq 0 ]; then
 	build_odin debug
 	run_demo
+
+	: ${PROGRAM:=$0}
+	printf "\nDebug compiler built. Note: run \"$PROGRAM release\" or \"$PROGRAM release-native\" if you want a faster, release mode compiler.\n"
 elif [ $# -eq 1 ]; then
 	case $1 in
 	report)

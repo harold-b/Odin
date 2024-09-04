@@ -1,6 +1,8 @@
 // Procedures to manipulate UTF-8 encoded strings
 package strings
 
+import "base:intrinsics"
+import "core:bytes"
 import "core:io"
 import "core:mem"
 import "core:unicode"
@@ -344,6 +346,17 @@ Output:
 contains_any :: proc(s, chars: string) -> (res: bool) {
 	return index_any(s, chars) >= 0
 }
+
+
+contains_space :: proc(s: string) -> (res: bool) {
+	for c in s {
+		if is_space(c) {
+			return true
+		}
+	}
+	return false
+}
+
 /*
 Returns the UTF-8 rune count of the string `s`
 
@@ -697,6 +710,63 @@ The concatenated string, and an error if allocation fails
 concatenate_safe :: proc(a: []string, allocator := context.allocator) -> (res: string, err: mem.Allocator_Error) {
 	return concatenate(a, allocator)
 }
+
+/*
+Returns a substring of the input string `s` with the specified rune offset and length
+
+Inputs:
+- s: The input string to cut
+- rune_offset: The starting rune index (default is 0). In runes, not bytes.
+- rune_length: The number of runes to include in the substring (default is 0, which returns the remainder of the string).  In runes, not bytes.
+
+Returns:
+- res: The substring
+
+Example:
+
+	import "core:fmt"
+	import "core:strings"
+
+	cut_example :: proc() {
+		fmt.println(strings.cut("some example text", 0, 4)) // -> "some"
+		fmt.println(strings.cut("some example text", 2, 2)) // -> "me"
+		fmt.println(strings.cut("some example text", 5, 7)) // -> "example"
+	}
+
+Output:
+
+	some
+	me
+	example
+
+*/
+cut :: proc(s: string, rune_offset := int(0), rune_length := int(0)) -> (res: string) {
+	s := s; rune_length := rune_length
+
+	count := 0
+	for _, offset in s {
+		if count == rune_offset {
+			s = s[offset:]
+			break
+		}
+		count += 1
+	}
+
+	if rune_length <= 1 {
+		return s
+	}
+
+	count = 0
+	for _, offset in s {
+		if count == rune_length {
+			s = s[:offset]
+			break
+		}
+		count += 1
+	}
+	return s
+}
+
 /*
 Returns a substring of the input string `s` with the specified rune offset and length
 
@@ -718,9 +788,9 @@ Example:
 	import "core:strings"
 
 	cut_example :: proc() {
-		fmt.println(strings.cut("some example text", 0, 4)) // -> "some"
-		fmt.println(strings.cut("some example text", 2, 2)) // -> "me"
-		fmt.println(strings.cut("some example text", 5, 7)) // -> "example"
+		fmt.println(strings.cut_clone("some example text", 0, 4)) // -> "some"
+		fmt.println(strings.cut_clone("some example text", 2, 2)) // -> "me"
+		fmt.println(strings.cut_clone("some example text", 5, 7)) // -> "example"
 	}
 
 Output:
@@ -730,57 +800,11 @@ Output:
 	example
 
 */
-cut :: proc(s: string, rune_offset := int(0), rune_length := int(0), allocator := context.allocator, loc := #caller_location) -> (res: string, err: mem.Allocator_Error) #optional_allocator_error {
-	s := s; rune_length := rune_length
-	context.allocator = allocator
-
-	// If we signal that we want the entire remainder (length <= 0) *and*
-	// the offset is zero, then we can early out by cloning the input
-	if rune_offset == 0 && rune_length <= 0 {
-		return clone(s)
-	}
-
-	// We need to know if we have enough runes to cover offset + length.
-	rune_count := utf8.rune_count_in_string(s)
-
-	// We're asking for a substring starting after the end of the input string.
-	// That's just an empty string.
-	if rune_offset >= rune_count {
-		return "", nil
-	}
-
-	// If we don't specify the length of the substring, use the remainder.
-	if rune_length <= 0 {
-		rune_length = rune_count - rune_offset
-	}
-
-	// We don't yet know how many bytes we need exactly.
-	// But we do know it's bounded by the number of runes * 4 bytes,
-	// and can be no more than the size of the input string.
-	bytes_needed := min(rune_length * 4, len(s))
-	buf := make([]u8, bytes_needed, allocator, loc) or_return
-
-	byte_offset := 0
-	for i := 0; i < rune_count; i += 1 {
-		_, w := utf8.decode_rune_in_string(s)
-
-		// If the rune is part of the substring, copy it to the output buffer.
-		if i >= rune_offset {
-			for j := 0; j < w; j += 1 {
-				buf[byte_offset+j] = s[j]
-			}
-			byte_offset += w
-		}
-
-		// We're done if we reach the end of the input string, *or*
-		// if we've reached a specified length in runes.
-		if rune_length > 0 {
-			if i == rune_offset + rune_length - 1 { break }
-		}
-		s = s[w:]
-	}
-	return string(buf[:byte_offset]), nil
+cut_clone :: proc(s: string, rune_offset := int(0), rune_length := int(0), allocator := context.allocator, loc := #caller_location) -> (res: string, err: mem.Allocator_Error) #optional_allocator_error {
+	res = cut(s, rune_offset, rune_length)
+	return clone(res, allocator, loc)
 }
+
 /*
 Splits the input string `s` into a slice of substrings separated by the specified `sep` string
 
@@ -1424,12 +1448,7 @@ Output:
 
 */
 index_byte :: proc(s: string, c: byte) -> (res: int) {
-	for i := 0; i < len(s); i += 1 {
-		if s[i] == c {
-			return i
-		}
-	}
-	return -1
+	return #force_inline bytes.index_byte(transmute([]u8)s, c)
 }
 /*
 Returns the byte offset of the last byte `c` in the string `s`, -1 when not found.
@@ -1464,12 +1483,7 @@ Output:
 
 */
 last_index_byte :: proc(s: string, c: byte) -> (res: int) {
-	for i := len(s)-1; i >= 0; i -= 1 {
-		if s[i] == c {
-			return i
-		}
-	}
-	return -1
+	return #force_inline bytes.last_index_byte(transmute([]u8)s, c)
 }
 /*
 Returns the byte offset of the first rune `r` in the string `s` it finds, -1 when not found.
@@ -2071,7 +2085,10 @@ replace :: proc(s, old, new: string, n: int, allocator := context.allocator, loc
 	}
 
 
-	t := make([]byte, len(s) + byte_count*(len(new) - len(old)), allocator, loc)
+	t, err := make([]byte, len(s) + byte_count*(len(new) - len(old)), allocator, loc)
+	if err != nil {
+		return
+	}
 	was_allocation = true
 
 	w := 0
@@ -3309,4 +3326,107 @@ levenshtein_distance :: proc(a, b: string, allocator := context.allocator, loc :
 	}
 
 	return costs[n], nil
+}
+
+@(private)
+internal_substring :: proc(s: string, rune_start: int, rune_end: int) -> (sub: string, ok: bool) {
+	sub = s
+	ok  = true
+
+	rune_i: int
+
+	if rune_start > 0 {
+		ok = false
+		for _, i in sub {
+			if rune_start == rune_i {
+				ok = true
+				sub = sub[i:]
+				break
+			}
+			rune_i += 1
+		}
+		if !ok { return }
+	}
+
+	if rune_end >= rune_start {
+		ok = false
+		for _, i in sub {
+			if rune_end == rune_i {
+				ok = true
+				sub = sub[:i]
+				break
+			}
+			rune_i += 1
+		}
+
+		if rune_end == rune_i {
+			ok = true
+		}
+	}
+
+	return
+}
+
+/*
+Returns a substring of `s` that starts at rune index `rune_start` and goes up to `rune_end`.
+
+Think of it as slicing `s[rune_start:rune_end]` but rune-wise.
+
+Inputs:
+- s: the string to substring
+- rune_start: the start (inclusive) rune
+- rune_end: the end (exclusive) rune
+
+Returns:
+- sub: the substring
+- ok: whether the rune indexes where in bounds of the original string
+*/
+substring :: proc(s: string, rune_start: int, rune_end: int) -> (sub: string, ok: bool) {
+	if rune_start < 0 || rune_end < 0 || rune_end < rune_start {
+		return
+	}
+
+	return internal_substring(s, rune_start, rune_end)
+}
+
+/*
+Returns a substring of `s` that starts at rune index `rune_start` and goes up to the end of the string.
+
+Think of it as slicing `s[rune_start:]` but rune-wise.
+
+Inputs:
+- s: the string to substring
+- rune_start: the start (inclusive) rune
+
+Returns:
+- sub: the substring
+- ok: whether the rune indexes where in bounds of the original string
+*/
+substring_from :: proc(s: string, rune_start: int) -> (sub: string, ok: bool) {
+	if rune_start < 0 {
+		return
+	}
+
+	return internal_substring(s, rune_start, -1)
+}
+
+/*
+Returns a substring of `s` that goes up to rune index `rune_end`.
+
+Think of it as slicing `s[:rune_end]` but rune-wise.
+
+Inputs:
+- s: the string to substring
+- rune_end: the end (exclusive) rune
+
+Returns:
+- sub: the substring
+- ok: whether the rune indexes where in bounds of the original string
+*/
+substring_to :: proc(s: string, rune_end: int) -> (sub: string, ok: bool) {
+	if rune_end < 0 {
+		return
+	}
+
+	return internal_substring(s, -1, rune_end)
 }

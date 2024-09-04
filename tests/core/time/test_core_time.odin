@@ -7,6 +7,43 @@ import dt "core:time/datetime"
 is_leap_year :: time.is_leap_year
 
 @test
+test_time_and_date_formatting :: proc(t: ^testing.T) {
+	buf: [64]u8
+	{
+		now := time.Time{_nsec=min(i64)} // 1677-09-21 00:12:44.145224192 +0000 UTC
+		d := time.Duration(now._nsec)
+
+		testing.expect_value(t, time.to_string_hms       (now, buf[:]),               "00:12:44")
+		testing.expect_value(t, time.to_string_hms_12    (now, buf[:]),               "00:12:44 am")
+		testing.expect_value(t, time.to_string_hms_12    (now, buf[:],  {"㏂", "㏘"}), "00:12:44㏂")
+		testing.expect_value(t, time.to_string_hms       (d,   buf[:]),               "00:12:44")
+
+		testing.expect_value(t, time.to_string_yyyy_mm_dd(now, buf[:]),               "1677-09-21")
+		testing.expect_value(t, time.to_string_yy_mm_dd  (now, buf[:]),               "77-09-21")
+		testing.expect_value(t, time.to_string_dd_mm_yyyy(now, buf[:]),               "21-09-1677")
+		testing.expect_value(t, time.to_string_dd_mm_yy  (now, buf[:]),               "21-09-77")
+		testing.expect_value(t, time.to_string_mm_dd_yyyy(now, buf[:]),               "09-21-1677")
+		testing.expect_value(t, time.to_string_mm_dd_yy  (now, buf[:]),               "09-21-77")
+	}
+	{
+		now := time.Time{_nsec=max(i64)} // 2262-04-11 23:47:16.854775807 +0000 UTC
+		d := time.Duration(now._nsec)
+
+		testing.expect_value(t, time.to_string_hms       (now, buf[:]),               "23:47:16")
+		testing.expect_value(t, time.to_string_hms_12    (now, buf[:]),               "11:47:16 pm")
+		testing.expect_value(t, time.to_string_hms_12    (now, buf[:],  {"㏂", "㏘"}), "11:47:16㏘")
+		testing.expect_value(t, time.to_string_hms       (d,   buf[:]),               "23:47:16")
+
+		testing.expect_value(t, time.to_string_yyyy_mm_dd(now, buf[:]),               "2262-04-11")
+		testing.expect_value(t, time.to_string_yy_mm_dd  (now, buf[:]),               "62-04-11")
+		testing.expect_value(t, time.to_string_dd_mm_yyyy(now, buf[:]),               "11-04-2262")
+		testing.expect_value(t, time.to_string_dd_mm_yy  (now, buf[:]),               "11-04-62")
+		testing.expect_value(t, time.to_string_mm_dd_yyyy(now, buf[:]),               "04-11-2262")
+		testing.expect_value(t, time.to_string_mm_dd_yy  (now, buf[:]),               "04-11-62")
+	}
+}
+
+@test
 test_ordinal_date_roundtrip :: proc(t: ^testing.T) {
 	testing.expect(t, dt.unsafe_ordinal_to_date(dt.unsafe_date_to_ordinal(dt.MIN_DATE)) == dt.MIN_DATE, "Roundtripping MIN_DATE failed.")
 	testing.expect(t, dt.unsafe_date_to_ordinal(dt.unsafe_ordinal_to_date(dt.MIN_ORD))  == dt.MIN_ORD,  "Roundtripping MIN_ORD failed.")
@@ -213,6 +250,31 @@ test_parse_iso8601_string :: proc(t: ^testing.T) {
 				)
 			}
 		}
+	}
+}
+
+@test
+test_time_to_datetime_roundtrip :: proc(t: ^testing.T) {
+	// Roundtrip a time through `time_to_datetime` to `DateTime` and back.
+	// Select `N` evenly-distributed points throughout the positive signed 64-bit number line.
+	N :: 1024
+	for i in 0..=i64(N) {
+		n := i * (max(i64) / N)
+		x := time.unix(0, n)
+
+		y, ttd_err := time.time_to_datetime(x)
+		testing.expectf(t, ttd_err,
+			"Time<%i> failed to convert to DateTime",
+			n) or_continue
+
+		z, dtt_err := time.datetime_to_time(y)
+		testing.expectf(t, dtt_err,
+			"DateTime<%v> failed to convert to Time",
+			y) or_continue
+
+		testing.expectf(t, x == z,
+			"Roundtrip conversion of Time to DateTime and back failed: got %v, expected %v",
+			z, x)
 	}
 }
 

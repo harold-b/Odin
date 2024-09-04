@@ -91,6 +91,9 @@ gb_internal void lb_init_module(lbModule *m, Checker *c) {
 	map_init(&m->map_cell_info_map, 0);
 	map_init(&m->exact_value_compound_literal_addr_map, 1024);
 
+	array_init(&m->pad_types, heap_allocator());
+
+
 	m->const_dummy_builder = LLVMCreateBuilderInContext(m->ctx);
 
 }
@@ -534,6 +537,15 @@ gb_internal lbValue lb_relative_pointer_to_pointer(lbProcedure *p, lbAddr const 
 	return final_ptr;
 }
 
+gb_internal lbValue lb_make_soa_pointer(lbProcedure *p, Type *type, lbValue const &addr, lbValue const &index) {
+	lbAddr v = lb_add_local_generated(p, type, false);
+	lbValue ptr = lb_emit_struct_ep(p, v.addr, 0);
+	lbValue idx = lb_emit_struct_ep(p, v.addr, 1);
+	lb_emit_store(p, ptr, addr);
+	lb_emit_store(p, idx, lb_emit_conv(p, index, t_int));
+
+	return lb_addr_load(p, v);
+}
 
 gb_internal lbValue lb_addr_get_ptr(lbProcedure *p, lbAddr const &addr) {
 	if (addr.addr.value == nullptr) {
@@ -549,8 +561,12 @@ gb_internal lbValue lb_addr_get_ptr(lbProcedure *p, lbAddr const &addr) {
 		return lb_relative_pointer_to_pointer(p, addr);
 
 	case lbAddr_SoaVariable:
-		// TODO(bill): FIX THIS HACK
-		return lb_address_from_load(p, lb_addr_load(p, addr));
+		{
+			Type *soa_ptr_type = alloc_type_soa_pointer(lb_addr_type(addr));
+			return lb_address_from_load_or_generate_local(p, lb_make_soa_pointer(p, soa_ptr_type, addr.addr, addr.soa.index));
+			// TODO(bill): FIX THIS HACK
+			// return lb_address_from_load(p, lb_addr_load(p, addr));
+		}
 
 	case lbAddr_Context:
 		GB_PANIC("lbAddr_Context should be handled elsewhere");
@@ -1771,7 +1787,7 @@ gb_internal LLVMTypeRef lb_type_internal_for_procedures_raw(lbModule *m, Type *t
 		}
 	}
 	GB_ASSERT(param_index == param_count);
-	lbFunctionType *ft = lb_get_abi_info(m->ctx, params, param_count, ret, ret != nullptr, return_is_tuple, type->Proc.calling_convention, type);
+	lbFunctionType *ft = lb_get_abi_info(m, params, param_count, ret, ret != nullptr, return_is_tuple, type->Proc.calling_convention, type);
 	{
 		for_array(j, ft->args) {
 			auto arg = ft->args[j];
@@ -2098,6 +2114,12 @@ gb_internal LLVMTypeRef lb_type_internal(lbModule *m, Type *type) {
 					llvm_type = LLVMStructCreateNamed(ctx, name);
 					map_set(&m->types, type, llvm_type);
 					lb_clone_struct_type(llvm_type, lb_type(m, base));
+
+					if (base->kind == Type_Struct) {
+						map_set(&m->struct_field_remapping, cast(void *)llvm_type, lb_get_struct_remapping(m, base));
+						map_set(&m->struct_field_remapping, cast(void *)type, lb_get_struct_remapping(m, base));
+					}
+
 					return llvm_type;
 				}
 			}

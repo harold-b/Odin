@@ -6,7 +6,7 @@ jobs:
     name: NetBSD Build, Check, and Test
     runs-on: ubuntu-latest
     env:
-      PKGSRC_BRANCH: 2024Q1
+      PKGSRC_BRANCH: 2024Q2
     steps:
     - uses: actions/checkout@v4
     - name: Build, Check, and Test
@@ -18,13 +18,11 @@ jobs:
         usesh: true
         copyback: false
         prepare: |
-          PKG_PATH="https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/$(uname -p)/$(uname -r | cut -d_ -f1)_${PKGSRC_BRANCH}/All" /usr/sbin/pkg_add pkgin
-          pkgin -y in gmake git bash python311
-          pkgin -y in libxml2 perl zstd
-          /usr/sbin/pkg_add https://github.com/andreas-jonsson/llvm17-netbsd-bin/releases/download/pkgsrc-current/llvm-17.0.6.tgz
-          /usr/sbin/pkg_add https://github.com/andreas-jonsson/llvm17-netbsd-bin/releases/download/pkgsrc-current/clang-17.0.6.tgz
+          PKG_PATH="https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/amd64/$(uname -r | cut -d_ -f1)_${PKGSRC_BRANCH}/All" /usr/sbin/pkg_add pkgin
+          pkgin -y in gmake git bash python311 llvm clang
           ln -s /usr/pkg/bin/python3.11 /usr/bin/python3
         run: |
+          set -e -x
           git config --global --add safe.directory $(pwd)
           gmake release
           ./odin version
@@ -34,10 +32,9 @@ jobs:
           gmake -C vendor/miniaudio/src
           ./odin check examples/all -vet -strict-style -disallow-do -target:netbsd_amd64
           ./odin check examples/all -vet -strict-style -disallow-do -target:netbsd_arm64
-          ./odin test tests/core/normal.odin -file -all-packages -define:ODIN_TEST_FANCY=false
-          ./odin test tests/core/speed.odin -file -all-packages -o:speed -define:ODIN_TEST_FANCY=false
-          ./odin test tests/vendor -all-packages -define:ODIN_TEST_FANCY=false
-          ./odin test tests/benchmark -all-packages -define:ODIN_TEST_FANCY=false
+          ./odin test tests/core/normal.odin -file -all-packages -vet -strict-style -disallow-do -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true
+          ./odin test tests/core/speed.odin -file -all-packages -vet -strict-style -disallow-do -o:speed -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true
+          ./odin test tests/vendor -all-packages -vet -strict-style -disallow-do -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true
           (cd tests/issues; ./run.sh)
   build_freebsd:
     name: FreeBSD Build, Check, and Test
@@ -63,10 +60,9 @@ jobs:
           gmake -C vendor/cgltf/src
           gmake -C vendor/miniaudio/src
           ./odin check examples/all -vet -strict-style -disallow-do -target:freebsd_amd64
-          ./odin test tests/core/normal.odin -file -all-packages -define:ODIN_TEST_FANCY=false
-          ./odin test tests/core/speed.odin -file -all-packages -o:speed -define:ODIN_TEST_FANCY=false
-          ./odin test tests/vendor -all-packages -define:ODIN_TEST_FANCY=false
-          ./odin test tests/benchmark -all-packages -define:ODIN_TEST_FANCY=false
+          ./odin test tests/core/normal.odin -file -all-packages -vet -strict-style -disallow-do -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true
+          ./odin test tests/core/speed.odin -file -all-packages -vet -strict-style -disallow-do -o:speed -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true
+          ./odin test tests/vendor -all-packages -vet -strict-style -disallow-do -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true
           (cd tests/issues; ./run.sh)
   ci:
     strategy:
@@ -91,13 +87,13 @@ jobs:
       - name: Download LLVM (MacOS Intel)
         if: matrix.os == 'macos-13'
         run: |
-          brew install llvm@17
+          brew install llvm@17 lua@5.4
           echo "/usr/local/opt/llvm@17/bin" >> $GITHUB_PATH
 
       - name: Download LLVM (MacOS ARM)
         if: matrix.os == 'macos-14'
         run: |
-          brew install llvm@17 wasmtime
+          brew install llvm@17 wasmtime lua@5.4
           echo "/opt/homebrew/opt/llvm@17/bin" >> $GITHUB_PATH
 
       - name: Build Odin
@@ -120,15 +116,13 @@ jobs:
       - name: Odin check examples/all
         run: ./odin check examples/all -strict-style
       - name: Normal Core library tests
-        run: ./odin test tests/core/normal.odin -file -all-packages -define:ODIN_TEST_FANCY=false
+        run: ./odin test tests/core/normal.odin -file -all-packages -vet -strict-style -disallow-do -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true
       - name: Optimized Core library tests
-        run: ./odin test tests/core/speed.odin -o:speed -file -all-packages -define:ODIN_TEST_FANCY=false
+        run: ./odin test tests/core/speed.odin -o:speed -file -all-packages -vet -strict-style -disallow-do -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true
       - name: Vendor library tests
-        run: ./odin test tests/vendor -all-packages -define:ODIN_TEST_FANCY=false
+        run: ./odin test tests/vendor -all-packages -vet -strict-style -disallow-do -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true
       - name: Internals tests
-        run: ./odin test tests/internal -all-packages -define:ODIN_TEST_FANCY=false
-      - name: Core library benchmarks
-        run: ./odin test tests/benchmark -all-packages -define:ODIN_TEST_FANCY=false
+        run: ./odin test tests/internal -all-packages -vet -strict-style -disallow-do -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true
       - name: GitHub Issue tests
         run: |
           cd tests/issues
@@ -182,37 +176,33 @@ jobs:
         shell: cmd
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat
-          odin run examples/demo -debug
+          odin run examples/demo -debug -vet -strict-style -disallow-do
       - name: Odin check examples/all
         shell: cmd
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat
-          odin check examples/all -strict-style
+          odin check examples/all -vet -strict-style -disallow-do
       - name: Core library tests
         shell: cmd
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat
-          odin test tests/core/normal.odin -file -all-packages -define:ODIN_TEST_FANCY=false
+          odin test tests/core/normal.odin -file -all-packages -vet -strict-style -disallow-do -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true
       - name: Optimized core library tests
         shell: cmd
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat
-          odin test tests/core/speed.odin -o:speed -file -all-packages -define:ODIN_TEST_FANCY=false
-      - name: Core library benchmarks
-        shell: cmd
-        run: |
-          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat
-          odin test tests/benchmark -all-packages -define:ODIN_TEST_FANCY=false
+          odin test tests/core/speed.odin -o:speed -file -all-packages -vet -strict-style -disallow-do -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true
       - name: Vendor library tests
         shell: cmd
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat
-          odin test tests/vendor -all-packages -define:ODIN_TEST_FANCY=false
+          copy vendor\lua\5.4\windows\*.dll .
+          odin test tests/vendor -all-packages -vet -strict-style -disallow-do -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true
       - name: Odin internals tests
         shell: cmd
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat
-          odin test tests/internal -all-packages -define:ODIN_TEST_FANCY=false
+          odin test tests/internal -all-packages -vet -strict-style -disallow-do -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true
       - name: Odin documentation tests
         shell: cmd
         run: |
@@ -230,3 +220,53 @@ jobs:
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat
           odin check examples/all -strict-style -target:windows_i386
+
+  build_linux_riscv64:
+    runs-on: ubuntu-latest
+    name: Linux riscv64 (emulated) Build, Check and Test
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download LLVM (Linux)
+        run: |
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 18
+          echo "/usr/lib/llvm-18/bin" >> $GITHUB_PATH
+
+      - name: Build Odin
+        run: ./build_odin.sh release
+
+      - name: Odin version
+        run: ./odin version
+
+      - name: Odin report
+        run: ./odin report
+
+      - name: Compile needed Vendor
+        run: |
+          make -C vendor/stb/src
+          make -C vendor/cgltf/src
+          make -C vendor/miniaudio/src
+
+      - name: Odin check
+        run: ./odin check examples/all -target:linux_riscv64 -vet -strict-style -disallow-do
+
+      - name: Install riscv64 toolchain and qemu
+        run: sudo apt-get install -y qemu-user qemu-user-static gcc-12-riscv64-linux-gnu libc6-riscv64-cross
+
+      - name: Odin run
+        run: ./odin run examples/demo -vet -strict-style -disallow-do -target:linux_riscv64 -extra-linker-flags:"-fuse-ld=/usr/bin/riscv64-linux-gnu-gcc-12 -static -Wl,-static"
+
+      - name: Odin run -debug
+        run: ./odin run examples/demo -debug -vet -strict-style -disallow-do -target:linux_riscv64 -extra-linker-flags:"-fuse-ld=/usr/bin/riscv64-linux-gnu-gcc-12 -static -Wl,-static"
+
+      - name: Normal Core library tests
+        run: ./odin test tests/core/normal.odin -file -all-packages -vet -strict-style -disallow-do -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true -target:linux_riscv64 -extra-linker-flags:"-fuse-ld=/usr/bin/riscv64-linux-gnu-gcc-12 -static -Wl,-static"
+
+      - name: Optimized Core library tests
+        run: ./odin test tests/core/speed.odin -o:speed -file -all-packages -vet -strict-style -disallow-do -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true -target:linux_riscv64 -extra-linker-flags:"-fuse-ld=/usr/bin/riscv64-linux-gnu-gcc-12 -static -Wl,-static"
+
+      - name: Internals tests
+        run: ./odin test tests/internal -all-packages -vet -strict-style -disallow-do -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true -target:linux_riscv64 -extra-linker-flags:"-fuse-ld=/usr/bin/riscv64-linux-gnu-gcc-12 -static -Wl,-static"

@@ -119,7 +119,7 @@ when ODIN_ARCH == .amd64 {
 		ctime:     Time_Spec,
 		_:         [3]uint,
 	}
-} else when ODIN_ARCH == .arm64 {
+} else when ODIN_ARCH == .arm64 || ODIN_ARCH == .riscv64 {
 	_Arch_Stat :: struct {
 		dev:        Dev,
 		ino:        Inode,
@@ -136,7 +136,7 @@ when ODIN_ARCH == .amd64 {
 		atime:      Time_Spec,
 		mtime:      Time_Spec,
 		ctime:      Time_Spec,
-		_:          [3]uint,
+		_:          [2]u32,
 	}
 } else {
 	_Arch_Stat :: struct {
@@ -688,7 +688,7 @@ Sock_Addr_In6 :: struct #packed {
 }
 
 /*
-  Struct representing Unix Domain Socket address
+	Struct representing Unix Domain Socket address
 */
 Sock_Addr_Un :: struct #packed {
 	sun_family: Address_Family,
@@ -927,7 +927,7 @@ when ODIN_ARCH == .i386 {
 		nsems:      uint,
 		_:          [2]uint,
 	}
-} else when ODIN_ARCH == .arm64 {
+} else when ODIN_ARCH == .arm64 || ODIN_ARCH == .riscv64 {
 	_Arch_Semid_DS :: struct {
 		perm:       IPC_Perm,
 		otime:      int,
@@ -1167,6 +1167,33 @@ when ODIN_ARCH == .arm32 {
 		xmm_space:        [32]uint,
 		padding:          [56]uint,
 	}
+} else when ODIN_ARCH == .riscv64 {
+	_Arch_User_Regs :: struct {
+		pc, ra, sp, gp, tp,
+		t0, t1, t2,
+		s0, s1,
+		a0, a1, a2, a3, a4, a5, a6, a7,
+		s2, s3, s4, s5, s6, s7, s8, s9, s10, s11,
+		t3, t4, t5, t6: uint,
+	}
+	_Arch_User_FP_Regs :: struct #raw_union {
+		f_ext: struct {
+			f:    [32]u32,
+			fcsr: u32,
+		},
+		d_ext: struct {
+			f:    [32]u64,
+			fcsr: u32,
+		},
+		q_ext: struct {
+			using _: struct #align(16) {
+				f:    [64]u64,
+			},
+			fcsr:     u32,
+			reserved: [3]u32,
+		},
+	}
+	_Arch_User_FPX_Regs :: struct {}
 }
 
 /*
@@ -1302,4 +1329,26 @@ EPoll_Data :: struct #raw_union {
 EPoll_Event :: struct #packed {
 	events: EPoll_Event_Kind,
 	data:   EPoll_Data,
+}
+
+/*
+	Flags for execveat(2) syscall.
+*/
+Execveat_Flags :: bit_set[Execveat_Flags_Bits; i32]
+
+RISCV_HWProbe_Flags         :: bit_set[RISCV_HWProbe_Flags_Bits; u32]
+RISCV_HWProbe_CPU_Perf_0    :: bit_set[RISCV_HWProbe_Misaligned_Scalar_Perf; u64]
+RISCV_HWProbe_Base_Behavior :: bit_set[RISCV_HWProbe_Base_Behavior_Bits; u64]
+RISCV_HWProbe_IMA_Ext_0     :: bit_set[RISCV_HWProbe_IMA_Ext_0_Bits; u64]
+
+RISCV_HWProbe :: struct {
+ 	// set to `.UNSUPPORTED` by the kernel if that is the case.
+	key:   RISCV_HWProbe_Key,
+	value: struct #raw_union {
+		base_behavior:          RISCV_HWProbe_Base_Behavior,
+		ima_ext_0:              RISCV_HWProbe_IMA_Ext_0,
+		cpu_perf_0:             RISCV_HWProbe_CPU_Perf_0,
+		misaligned_scalar_perf: RISCV_HWProbe_Misaligned_Scalar_Perf,
+		raw:                    u64,
+	},
 }

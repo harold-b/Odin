@@ -1559,11 +1559,30 @@ gb_internal Type *determine_type_from_polymorphic(CheckerContext *ctx, Type *pol
 		return poly_type;
 	}
 	if (show_error) {
+		ERROR_BLOCK();
 		gbString pts = type_to_string(poly_type);
 		gbString ots = type_to_string(operand.type, true);
 		defer (gb_string_free(pts));
 		defer (gb_string_free(ots));
 		error(operand.expr, "Cannot determine polymorphic type from parameter: '%s' to '%s'", ots, pts);
+
+		Type *pt = poly_type;
+		while (pt && pt->kind == Type_Generic && pt->Generic.specialized) {
+			pt = pt->Generic.specialized;
+		}
+		if (is_type_slice(pt) &&
+		    (is_type_dynamic_array(operand.type) || is_type_array(operand.type))) {
+			Ast *expr = unparen_expr(operand.expr);
+			if (expr->kind == Ast_CompoundLit) {
+				gbString es = type_to_string(base_any_array_type(operand.type));
+				error_line("\tSuggestion: Try using a slice compound literal instead '[]%s{...}'\n", es);
+				gb_string_free(es);
+			} else {
+				gbString os = expr_to_string(operand.expr);
+				error_line("\tSuggestion: Try slicing the value with '%s[:]'\n", os);
+				gb_string_free(os);
+			}
+		}
 	}
 	return t_invalid;
 }
@@ -1759,6 +1778,11 @@ gb_internal Type *check_get_params(CheckerContext *ctx, Scope *scope, Ast *_para
 				variadic_index = variables.count;
 				if (p->names.count != 1) {
 					error(param, "Invalid AST: Invalid variadic parameter with multiple names");
+					success = false;
+				}
+
+				if (default_value != nullptr) {
+					error(type_expr, "A variadic parameter may not have a default value");
 					success = false;
 				}
 
@@ -2290,8 +2314,28 @@ gb_internal Type *check_get_results(CheckerContext *ctx, Scope *scope, Ast *_res
 	return tuple;
 }
 
+gb_internal void check_procedure_param_polymorphic_type(CheckerContext *ctx, Type *type, Ast *type_expr) {
+	GB_ASSERT_NOT_NULL(type_expr);
+	if (type == nullptr || ctx->in_polymorphic_specialization) { return; }
+	if (!is_type_polymorphic_record_unspecialized(type)) { return; }
 
+	bool invalid_polymorpic_type_use = false;
+	switch (type_expr->kind) {
+	case_ast_node(pt, Ident, type_expr);
+		invalid_polymorpic_type_use = true;
+	case_end;
 
+	case_ast_node(pt, SelectorExpr, type_expr);
+		invalid_polymorpic_type_use = true;
+	case_end;
+	}
+
+	if (invalid_polymorpic_type_use) {
+		gbString expr_str = expr_to_string(type_expr);
+		defer (gb_string_free(expr_str));
+		error(type_expr, "Invalid use of a non-specialized polymorphic type '%s'", expr_str);
+	}
+}
 
 // NOTE(bill): 'operands' is for generating non generic procedure type
 gb_internal bool check_procedure_type(CheckerContext *ctx, Type *type, Ast *proc_type_node, Array<Operand> const *operands) {
@@ -2414,6 +2458,7 @@ gb_internal bool check_procedure_type(CheckerContext *ctx, Type *type, Ast *proc
 		if (e->kind != Entity_Variable) {
 			is_polymorphic = true;
 		} else if (is_type_polymorphic(e->type)) {
+			check_procedure_param_polymorphic_type(c, e->type, e->Variable.type_expr);
 			is_polymorphic = true;
 		}
 
@@ -2454,9 +2499,15 @@ gb_internal i64 check_array_count(CheckerContext *ctx, Operand *o, Ast *e) {
 	if (e == nullptr) {
 		return 0;
 	}
-	if (e->kind == Ast_UnaryExpr &&
-	    e->UnaryExpr.op.kind == Token_Question) {
-		return -1;
+	if (e->kind == Ast_UnaryExpr) {
+		Token op = e->UnaryExpr.op;
+		if (op.kind == Token_Question) {
+			return -1;
+		}
+		if (e->UnaryExpr.expr == nullptr) {
+			error(op, "Invalid array count '[%.*s]'", LIT(op.string));
+			return 0;
+		}
 	}
 
 	check_expr_or_type(ctx, o, e);
@@ -2692,6 +2743,18 @@ gb_internal void add_map_key_type_dependencies(CheckerContext *ctx, Type *key) {
 gb_internal void check_map_type(CheckerContext *ctx, Type *type, Ast *node) {
 	GB_ASSERT(type->kind == Type_Map);
 	ast_node(mt, MapType, node);
+
+	if (mt->key == NULL) {
+		if (mt->value != NULL) {
+			Type *value = check_type(ctx, mt->value);
+			gbString str = type_to_string(value);
+			error(node, "Missing map key type, got 'map[]%s'", str);
+			gb_string_free(str);
+			return;
+		}
+		error(node, "Missing map key type, got 'map[]T'");
+		return;
+	}
 
 	Type *key   = check_type(ctx, mt->key);
 	Type *value = check_type(ctx, mt->value);
@@ -3146,7 +3209,7 @@ gb_internal void check_array_type_internal(CheckerContext *ctx, Ast *e, Type **t
 			} else if (name == "simd") {
 				if (!is_type_valid_vector_elem(elem) && !is_type_polymorphic(elem)) {
 					gbString str = type_to_string(elem);
-					error(at->elem, "Invalid element type for #simd, expected an integer, float, or boolean with no specific endianness, got '%s'", str);
+					error(at->elem, "Invalid element type for #simd, expected an integer, float, boolean, or 'rawptr' with no specific endianness, got '%s'", str);
 					gb_string_free(str);
 					*type = alloc_type_array(elem, count, generic_type);
 					return;

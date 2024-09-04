@@ -525,11 +525,12 @@ Raw_Quaternion256_Vector_Scalar :: struct {vector: [3]f64, scalar: f64}
 		Linux,
 		Essence,
 		FreeBSD,
-		Haiku,
 		OpenBSD,
 		NetBSD,
+		Haiku,
 		WASI,
 		JS,
+		Orca,
 		Freestanding,
 	}
 */
@@ -545,9 +546,22 @@ Odin_OS_Type :: type_of(ODIN_OS)
 		arm64,
 		wasm32,
 		wasm64p32,
+		riscv64,
 	}
 */
 Odin_Arch_Type :: type_of(ODIN_ARCH)
+
+Odin_Arch_Types :: bit_set[Odin_Arch_Type]
+
+ALL_ODIN_ARCH_TYPES :: Odin_Arch_Types{
+	.amd64,
+	.i386,
+	.arm32,
+	.arm64,
+	.wasm32,
+	.wasm64p32,
+	.riscv64,
+}
 
 /*
 	// Defined internally by the compiler
@@ -572,6 +586,22 @@ Odin_Build_Mode_Type :: type_of(ODIN_BUILD_MODE)
 */
 Odin_Endian_Type :: type_of(ODIN_ENDIAN)
 
+Odin_OS_Types :: bit_set[Odin_OS_Type]
+
+ALL_ODIN_OS_TYPES :: Odin_OS_Types{
+	.Windows,
+	.Darwin,
+	.Linux,
+	.Essence,
+	.FreeBSD,
+	.OpenBSD,
+	.NetBSD,
+	.Haiku,
+	.WASI,
+	.JS,
+	.Orca,
+	.Freestanding,
+}
 
 /*
 	// Defined internally by the compiler
@@ -589,7 +619,7 @@ Odin_Platform_Subtarget_Type :: type_of(ODIN_PLATFORM_SUBTARGET)
 		Memory  = 1,
 		Thread  = 2,
 	}
-	Odin_Sanitizer_Flags :: distinct bitset[Odin_Sanitizer_Flag; u32]
+	Odin_Sanitizer_Flags :: distinct bit_set[Odin_Sanitizer_Flag; u32]
 
 	ODIN_SANITIZER_FLAGS // is a constant
 */
@@ -749,6 +779,10 @@ __init_context :: proc "contextless" (c: ^Context) {
 }
 
 default_assertion_failure_proc :: proc(prefix, message: string, loc: Source_Code_Location) -> ! {
+	default_assertion_contextless_failure_proc(prefix, message, loc)
+}
+
+default_assertion_contextless_failure_proc :: proc "contextless" (prefix, message: string, loc: Source_Code_Location) -> ! {
 	when ODIN_OS == .Freestanding {
 		// Do nothing
 	} else {

@@ -11,8 +11,8 @@ Have a look at the `example/` directory for the rendering of a basic triangle.
 ## Getting the wgpu-native libraries
 
 For native support (not the browser), some libraries are required. Fortunately this is
-extremely easy, just download them from the [releases on GitHub](https://github.com/gfx-rs/wgpu-native/releases/tag/v0.19.4.1),
-the bindings are for v0.19.4.1 at the moment.
+extremely easy, just download them from the [releases on GitHub](https://github.com/gfx-rs/wgpu-native/releases/tag/v22.1.0.1),
+the bindings are for v22.1.0.1 at the moment.
 
 These are expected in the `lib` folder under the same name as they are released (just unzipped).
 By default it will look for a static release version (`wgpu-OS-ARCH-release.a|lib`),
@@ -37,12 +37,25 @@ The bindings work on both `-target:js_wasm32` and `-target:js_wasm64p32`.
 ## GLFW Glue
 
 There is an inner package `glfwglue` that can be used to glue together WGPU and GLFW.
-It exports one procedure `GetSurface(wgpu.Instance, glfw.WindowHandle) -> glfw.Surface`.
+It exports one procedure `GetSurface(wgpu.Instance, glfw.WindowHandle) -> wgpu.Surface`.
 The procedure will call the needed target specific procedures and return a surface configured
 for the given window.
 
-To support Wayland on Linux, you need to have GLFW compiled to support it, and use
-`-define:WGPU_GFLW_GLUE_SUPPORT_WAYLAND=true` to enable the package to check for Wayland.
-
 Do note that wgpu does not require GLFW, you can use native windows or another windowing library too.
 For that you can take inspiration from `glfwglue` on glueing them together.
+
+## SDL2 Glue
+
+There is an inner package `sdl2glue` that can be used to glue together WGPU and SDL2.
+It exports one procedure `GetSurface(wgpu.Instance, ^sdl2.Window) -> wgpu.Surface`.
+The procedure will call the needed target specific procedures and return a surface configured
+for the given window.
+
+### Wayland
+
+GLFW supports Wayland from version 3.4 onwards and only if it is compiled with `-DGLFW_EXPOSE_NATIVE_WAYLAND`.
+
+Odin links against your system's glfw library (probably installed through a package manager).
+If that version is lower than 3.4 or hasn't been compiled with the previously mentioned define,
+you will have to compile glfw from source yourself and adjust the `foreign import` declarations in `vendor:glfw/bindings` to
+point to it.

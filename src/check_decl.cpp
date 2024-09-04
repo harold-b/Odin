@@ -180,6 +180,8 @@ gb_internal void override_entity_in_scope(Entity *original_entity, Entity *new_e
 
 	original_entity->flags |= EntityFlag_Overridden;
 	original_entity->type = new_entity->type;
+	original_entity->kind = new_entity->kind;
+	original_entity->decl_info = new_entity->decl_info;
 	original_entity->aliased_of = new_entity;
 
 	original_entity->identifier.store(new_entity->identifier);
@@ -193,7 +195,7 @@ gb_internal void override_entity_in_scope(Entity *original_entity, Entity *new_e
 	// This is most likely NEVER required, but it does not at all hurt to keep
 	isize offset = cast(u8 *)&original_entity->Dummy.start - cast(u8 *)original_entity;
 	isize size = gb_size_of(*original_entity) - offset;
-	gb_memmove(cast(u8 *)original_entity, cast(u8 *)new_entity, size);
+	gb_memmove(cast(u8 *)original_entity + offset, cast(u8 *)new_entity + offset, size);
 }
 
 gb_internal bool check_override_as_type_due_to_aliasing(CheckerContext *ctx, Entity *e, Entity *entity, Ast *init, Type *named_type) {
@@ -689,6 +691,13 @@ gb_internal bool sig_compare(TypeCheckSig *a, TypeCheckSig *b, Type *x, Type *y)
 }
 
 gb_internal bool signature_parameter_similar_enough(Type *x, Type *y) {
+	if (is_type_bit_set(x)) {
+		x = bit_set_to_int(x);
+	}
+	if (is_type_bit_set(y)) {
+		y = bit_set_to_int(y);
+	}
+
 	if (sig_compare(is_type_pointer, x, y)) {
 		return true;
 	}
@@ -735,6 +744,14 @@ gb_internal bool signature_parameter_similar_enough(Type *x, Type *y) {
 		return true;
 	}
 
+	if (sig_compare(is_type_slice, x, y)) {
+		Type *s1 = core_type(x);
+		Type *s2 = core_type(y);
+		if (signature_parameter_similar_enough(s1->Slice.elem, s2->Slice.elem)) {
+			return true;
+		}
+	}
+
 	return are_types_identical(x, y);
 }
 
@@ -754,13 +771,29 @@ gb_internal bool are_signatures_similar_enough(Type *a_, Type *b_) {
 	for (isize i = 0; i < a->param_count; i++) {
 		Type *x = core_type(a->params->Tuple.variables[i]->type);
 		Type *y = core_type(b->params->Tuple.variables[i]->type);
+
+		if (x->kind == Type_BitSet && x->BitSet.underlying) {
+			x = core_type(x->BitSet.underlying);
+		}
+		if (y->kind == Type_BitSet && y->BitSet.underlying) {
+			y = core_type(y->BitSet.underlying);
+		}
+
 		if (!signature_parameter_similar_enough(x, y)) {
 			return false;
 		}
 	}
 	for (isize i = 0; i < a->result_count; i++) {
-		Type *x = base_type(a->results->Tuple.variables[i]->type);
-		Type *y = base_type(b->results->Tuple.variables[i]->type);
+		Type *x = core_type(a->results->Tuple.variables[i]->type);
+		Type *y = core_type(b->results->Tuple.variables[i]->type);
+
+		if (x->kind == Type_BitSet && x->BitSet.underlying) {
+			x = core_type(x->BitSet.underlying);
+		}
+		if (y->kind == Type_BitSet && y->BitSet.underlying) {
+			y = core_type(y->BitSet.underlying);
+		}
+
 		if (!signature_parameter_similar_enough(x, y)) {
 			return false;
 		}
@@ -1122,7 +1155,7 @@ gb_internal void check_proc_decl(CheckerContext *ctx, Entity *e, DeclInfo *d) {
 
 	e->deprecated_message = ac.deprecated_message;
 	e->warning_message = ac.warning_message;
-	ac.link_name = handle_link_name(ctx, e->token, ac.link_name, ac.link_prefix,ac.link_suffix);
+	ac.link_name = handle_link_name(ctx, e->token, ac.link_name, ac.link_prefix, ac.link_suffix);
 	if (ac.has_disabled_proc) {
 		if (ac.disabled_proc) {
 			e->flags |= EntityFlag_Disabled;
@@ -1219,6 +1252,8 @@ gb_internal void check_proc_decl(CheckerContext *ctx, Entity *e, DeclInfo *d) {
 		} else {
 			pt->require_results = true;
 		}
+	} else if (d->foreign_require_results && pt->result_count != 0) {
+		pt->require_results = true;
 	}
 
 	if (ac.link_name.len > 0) {

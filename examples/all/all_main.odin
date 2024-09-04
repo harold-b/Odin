@@ -25,6 +25,7 @@ import rbtree           "core:container/rbtree"
 import topological_sort "core:container/topological_sort"
 
 import crypto           "core:crypto"
+import aead             "core:crypto/aead"
 import aes              "core:crypto/aes"
 import blake2b          "core:crypto/blake2b"
 import blake2s          "core:crypto/blake2s"
@@ -61,6 +62,7 @@ import cbor             "core:encoding/cbor"
 import csv              "core:encoding/csv"
 import endian           "core:encoding/endian"
 import hxa              "core:encoding/hxa"
+import ini              "core:encoding/ini"
 import json             "core:encoding/json"
 import varint           "core:encoding/varint"
 import xml              "core:encoding/xml"
@@ -126,6 +128,7 @@ import testing          "core:testing"
 import edit             "core:text/edit"
 import i18n             "core:text/i18n"
 import match            "core:text/match"
+import regex            "core:text/regex"
 import scanner          "core:text/scanner"
 import table            "core:text/table"
 
@@ -134,6 +137,7 @@ import time             "core:time"
 import datetime         "core:time/datetime"
 import flags            "core:flags"
 
+import orca             "core:sys/orca"
 import sysinfo          "core:sys/info"
 
 import unicode          "core:unicode"
@@ -163,6 +167,7 @@ _ :: rbtree
 _ :: topological_sort
 _ :: crypto
 _ :: crypto_hash
+_ :: aead
 _ :: aes
 _ :: blake2b
 _ :: blake2s
@@ -193,6 +198,7 @@ _ :: base32
 _ :: base64
 _ :: csv
 _ :: hxa
+_ :: ini
 _ :: json
 _ :: varint
 _ :: xml
@@ -246,12 +252,14 @@ _ :: testing
 _ :: scanner
 _ :: i18n
 _ :: match
+_ :: regex
 _ :: table
 _ :: edit
 _ :: thread
 _ :: time
 _ :: datetime
 _ :: flags
+_ :: orca
 _ :: sysinfo
 _ :: unicode
 _ :: uuid

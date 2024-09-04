@@ -127,6 +127,8 @@ gb_internal bool complete_soa_type(Checker *checker, Type *t, bool wait_to_finis
 
 gb_internal bool check_is_castable_to(CheckerContext *c, Operand *operand, Type *y);
 
+gb_internal bool is_exact_value_zero(ExactValue const &v);
+
 enum LoadDirectiveResult {
 	LoadDirective_Success  = 0,
 	LoadDirective_Error    = 1,
@@ -1069,16 +1071,19 @@ gb_internal void check_assignment(CheckerContext *c, Operand *operand, Type *typ
 		return;
 	}
 
+	// Grab definite or indefinite article matching `context_name`, or "" if not found.
+	String article = error_article(context_name);
+
 	if (is_type_untyped(operand->type)) {
 		Type *target_type = type;
 		if (type == nullptr || is_type_any(type)) {
 			if (type == nullptr && is_type_untyped_uninit(operand->type)) {
-				error(operand->expr, "Use of --- in %.*s", LIT(context_name));
+				error(operand->expr, "Use of --- in %.*s%.*s", LIT(article), LIT(context_name));
 				operand->mode = Addressing_Invalid;
 				return;
 			}
 			if (type == nullptr && is_type_untyped_nil(operand->type)) {
-				error(operand->expr, "Use of untyped nil in %.*s", LIT(context_name));
+				error(operand->expr, "Use of untyped nil in %.*s%.*s", LIT(article), LIT(context_name));
 				operand->mode = Addressing_Invalid;
 				return;
 			}
@@ -1133,9 +1138,10 @@ gb_internal void check_assignment(CheckerContext *c, Operand *operand, Type *typ
 
 			// TODO(bill): is this a good enough error message?
 			error(operand->expr,
-			      "Cannot assign overloaded procedure group '%s' to '%s' in %.*s",
+			      "Cannot assign overloaded procedure group '%s' to '%s' in %.*s%.*s",
 			      expr_str,
 			      op_type_str,
+			      LIT(article),
 			      LIT(context_name));
 			operand->mode = Addressing_Invalid;
 		}
@@ -1161,21 +1167,28 @@ gb_internal void check_assignment(CheckerContext *c, Operand *operand, Type *typ
 		switch (operand->mode) {
 		case Addressing_Builtin:
 			error(operand->expr,
-			      "Cannot assign built-in procedure '%s' in %.*s",
+			      "Cannot assign built-in procedure '%s' to %.*s%.*s",
 			      expr_str,
+			      LIT(article),
 			      LIT(context_name));
 			break;
 		case Addressing_Type:
 			if (is_type_polymorphic(operand->type)) {
 				error(operand->expr,
-				      "Cannot assign '%s' which is a polymorphic type in %.*s",
+				      "Cannot assign '%s', a polymorphic type, to %.*s%.*s",
 				      op_type_str,
+				      LIT(article),
 				      LIT(context_name));
 			} else {
+				ERROR_BLOCK();
 				error(operand->expr,
-				      "Cannot assign '%s' which is a type in %.*s",
+				      "Cannot assign '%s', a type, to %.*s%.*s",
 				      op_type_str,
+				      LIT(article),
 				      LIT(context_name));
+				if (type && are_types_identical(type, t_any)) {
+					error_line("\tSuggestion: 'typeid_of(%s)'", expr_str);
+				}
 			}
 			break;
 		default:
@@ -1201,10 +1214,11 @@ gb_internal void check_assignment(CheckerContext *c, Operand *operand, Type *typ
 
 				ERROR_BLOCK();
 				error(operand->expr,
-				      "Cannot assign value '%s' of type '%s%s' to '%s%s' in %.*s",
+				      "Cannot assign value '%s' of type '%s%s' to '%s%s' in %.*s%.*s",
 				      expr_str,
 				      op_type_str, op_type_extra,
 				      type_str, type_extra,
+				      LIT(article),
 				      LIT(context_name));
 				check_assignment_error_suggestion(c, operand, type);
 
@@ -1231,6 +1245,24 @@ gb_internal void check_assignment(CheckerContext *c, Operand *operand, Type *typ
 						error_line("\t      Expected \"%s\", got \"%s\"\n",
 						           proc_calling_convention_strings[y->Proc.calling_convention],
 						           proc_calling_convention_strings[x->Proc.calling_convention]);
+						error_line("\t      Expected: %s\n", s_expected);
+						error_line("\t      Got:      %s\n", s_got);
+						gb_string_free(s_got);
+						gb_string_free(s_expected);
+					} else if (same_inputs && same_outputs &&
+						x->Proc.diverging != y->Proc.diverging) {
+
+						gbString s_expected = type_to_string(y);
+						if (y->Proc.diverging) {
+							s_expected = gb_string_appendc(s_expected, " -> !");
+						}
+
+						gbString s_got = type_to_string(x);
+						if (x->Proc.diverging) {
+							s_got = gb_string_appendc(s_got, " -> !");
+						}
+
+						error_line("\tNote: One of the procedures is diverging while the other isn't\n");
 						error_line("\t      Expected: %s\n", s_expected);
 						error_line("\t      Got:      %s\n", s_got);
 						gb_string_free(s_got);
@@ -2312,14 +2344,24 @@ gb_internal bool check_integer_exceed_suggestion(CheckerContext *c, Operand *o, 
 		}
 		BigInt *bi = &o->value.value_integer;
 		if (is_type_unsigned(type)) {
+			BigInt one = big_int_make_u64(1);
+			BigInt max_size = big_int_make_u64(1);
+			BigInt bits = big_int_make_i64(bit_size);
+			big_int_shl_eq(&max_size, &bits);
+			big_int_sub_eq(&max_size, &one);
+
 			if (big_int_is_neg(bi)) {
 				error_line("\tA negative value cannot be represented by the unsigned integer type '%s'\n", b);
+				BigInt dst = {};
+				big_int_neg(&dst, bi);
+				if (big_int_cmp(&dst, &max_size) < 0) {
+					big_int_sub_eq(&dst, &one);
+					String dst_str = big_int_to_string(temporary_allocator(), &dst);
+					gbString t = type_to_string(type);
+					error_line("\tSuggestion: ~%s(%.*s)\n", t, LIT(dst_str));
+					gb_string_free(t);
+				}
 			} else {
-				BigInt one = big_int_make_u64(1);
-				BigInt max_size = big_int_make_u64(1);
-				BigInt bits = big_int_make_i64(bit_size);
-				big_int_shl_eq(&max_size, &bits);
-				big_int_sub_eq(&max_size, &one);
 				String max_size_str = big_int_to_string(temporary_allocator(), &max_size);
 
 				if (size_changed) {
@@ -2533,6 +2575,84 @@ gb_internal bool check_is_not_addressable(CheckerContext *c, Operand *o) {
 	return o->mode != Addressing_Variable && o->mode != Addressing_SoaVariable;
 }
 
+gb_internal ExactValue exact_bit_set_all_set_mask(Type *type) {
+	type = base_type(type);
+	GB_ASSERT(type->kind == Type_BitSet);
+
+	i64 lower = type->BitSet.lower;
+	i64 upper = type->BitSet.upper;
+	Type *elem = type->BitSet.elem;
+	Type *underlying = type->BitSet.underlying;
+	bool is_backed = underlying != nullptr;
+	gb_unused(is_backed);
+
+	BigInt b_lower = {};
+	BigInt b_upper = {};
+	big_int_from_i64(&b_lower, lower);
+	big_int_from_i64(&b_upper, upper);
+
+
+	BigInt one = {};
+	big_int_from_u64(&one, 1);
+
+	BigInt mask = {};
+
+	if (elem == nullptr) {
+		big_int_from_i64(&mask, -1);
+	} else if (is_type_enum(elem)) {
+		Type *e = base_type(elem);
+		GB_ASSERT(e->kind == Type_Enum);
+		gb_unused(e);
+
+		if ((big_int_cmp(&e->Enum.min_value->value_integer, &b_lower) == 0 || is_backed) &&
+		    big_int_cmp(&e->Enum.max_value->value_integer, &b_upper) == 0) {
+
+			i64 lower_base = is_backed ? gb_min(0, lower) : lower;
+			BigInt b_lower_base = {};
+			big_int_from_i64(&b_lower_base, lower_base);
+
+			for (Entity *f : e->Enum.fields) {
+				if (f->kind != Entity_Constant) {
+					continue;
+				}
+				if (f->Constant.value.kind != ExactValue_Integer) {
+					continue;
+				}
+
+				BigInt shift_amount = f->Constant.value.value_integer;
+				big_int_sub_eq(&shift_amount, &b_lower_base);
+
+
+				BigInt value = {};
+				big_int_shl(&value, &one, &shift_amount);
+
+				big_int_or(&mask, &mask, &value);
+			}
+
+		} else {
+			// TODO(bill): enum range based");
+			big_int_from_i64(&mask, -1);
+		}
+	} else {
+		i64 lower_base = lower;
+		for (i64 x = lower; x <= upper; x++) {
+			BigInt shift_amount = {};
+			big_int_from_i64(&shift_amount, x - lower_base);
+
+			BigInt value = {};
+			big_int_shl(&value, &one, &shift_amount);
+
+			big_int_or(&mask, &mask, &value);
+		}
+	}
+
+
+	ExactValue res = {};
+	res.kind = ExactValue_Integer;
+	res.value_integer = mask;
+	return res;
+}
+
 gb_internal void check_unary_expr(CheckerContext *c, Operand *o, Token op, Ast *node) {
 	switch (op.kind) {
 	case Token_And: { // Pointer address
@@ -2672,6 +2792,10 @@ gb_internal void check_unary_expr(CheckerContext *c, Operand *o, Token op, Ast *
 		}
 
 		o->value = exact_unary_operator_value(op.kind, o->value, precision, is_unsigned);
+		if (op.kind == Token_Xor && is_type_bit_set(type)) {
+			ExactValue mask = exact_bit_set_all_set_mask(type);
+			o->value = exact_binary_operator_value(Token_And, o->value, mask);
+		}
 
 		if (is_type_typed(type)) {
 			if (node != nullptr) {
@@ -3018,7 +3142,7 @@ gb_internal void check_shift(CheckerContext *c, Operand *x, Operand *y, Ast *nod
 			x->mode = Addressing_Value;
 			if (type_hint) {
 				if (is_type_integer(type_hint)) {
-					x->type = type_hint;
+					convert_to_typed(c, x, type_hint);
 				} else {
 					gbString x_str = expr_to_string(x->expr);
 					gbString to_type = type_to_string(type_hint);
@@ -3744,10 +3868,10 @@ gb_internal void check_binary_expr(CheckerContext *c, Operand *x, Ast *node, Typ
 		// NOTE(bill): Allow comparisons between types
 		if (is_ise_expr(be->left)) {
 			// Evalute the right before the left for an '.X' expression
-			check_expr_or_type(c, y, be->right, type_hint);
+			check_expr_or_type(c, y, be->right, nullptr /* ignore type hint */);
 			check_expr_or_type(c, x, be->left, y->type);
 		} else {
-			check_expr_or_type(c, x, be->left, type_hint);
+			check_expr_or_type(c, x, be->left, nullptr /* ignore type hint */);
 			check_expr_or_type(c, y, be->right, x->type);
 		}
 		bool xt = x->mode == Addressing_Type;
@@ -3913,6 +4037,60 @@ gb_internal void check_binary_expr(CheckerContext *c, Operand *x, Ast *node, Typ
 			error(y->expr, "procedure group used in binary expression");
 		}
 		return;
+	}
+
+	bool REQUIRE = true;
+	Type *bt = base_type(x->type);
+	if (op.kind == Token_Mod    || op.kind == Token_ModEq ||
+	    op.kind == Token_ModMod || op.kind == Token_ModModEq) {
+		if (bt->kind == Type_Basic) switch (bt->Basic.kind) {
+		case Basic_u128: add_package_dependency(c, "runtime", "umodti3", REQUIRE); break;
+		case Basic_i128: add_package_dependency(c, "runtime", "modti3",  REQUIRE); break;
+		}
+	} else if (op.kind == Token_Quo || op.kind == Token_QuoEq) {
+		if (bt->kind == Type_Basic) switch (bt->Basic.kind) {
+		case Basic_complex32:     add_package_dependency(c, "runtime", "quo_complex32");     break;
+		case Basic_complex64:     add_package_dependency(c, "runtime", "quo_complex64");     break;
+		case Basic_complex128:    add_package_dependency(c, "runtime", "quo_complex128");    break;
+		case Basic_quaternion64:  add_package_dependency(c, "runtime", "quo_quaternion64");  break;
+		case Basic_quaternion128: add_package_dependency(c, "runtime", "quo_quaternion128"); break;
+		case Basic_quaternion256: add_package_dependency(c, "runtime", "quo_quaternion256"); break;
+
+		case Basic_u128: add_package_dependency(c, "runtime", "udivti3", REQUIRE); break;
+		case Basic_i128: add_package_dependency(c, "runtime", "divti3",  REQUIRE); break;
+		}
+	} else if (op.kind == Token_Mul || op.kind == Token_MulEq) {
+		if (bt->kind == Type_Basic) switch (bt->Basic.kind) {
+		case Basic_quaternion64:  add_package_dependency(c, "runtime", "mul_quaternion64");  break;
+		case Basic_quaternion128: add_package_dependency(c, "runtime", "mul_quaternion128"); break;
+		case Basic_quaternion256: add_package_dependency(c, "runtime", "mul_quaternion256"); break;
+
+
+		case Basic_u128:
+		case Basic_i128:
+			if (is_arch_wasm()) {
+				add_package_dependency(c, "runtime", "__multi3", REQUIRE);
+			}
+			break;
+		}
+	} else if (op.kind == Token_Shl || op.kind == Token_ShlEq) {
+		if (bt->kind == Type_Basic) switch (bt->Basic.kind) {
+		case Basic_u128:
+		case Basic_i128:
+			if (is_arch_wasm()) {
+				add_package_dependency(c, "runtime", "__ashlti3", REQUIRE);
+			}
+			break;
+		}
+	} else if (op.kind == Token_Shr || op.kind == Token_ShrEq) {
+		if (bt->kind == Type_Basic) switch (bt->Basic.kind) {
+		case Basic_u128:
+		case Basic_i128:
+			if (is_arch_wasm()) {
+				add_package_dependency(c, "runtime", "__lshrti3", REQUIRE);
+			}
+			break;
+		}
 	}
 
 	if (token_is_shift(op.kind)) {
@@ -4081,52 +4259,6 @@ gb_internal void check_binary_expr(CheckerContext *c, Operand *x, Ast *node, Typ
 		error(node, "String concatenation is only allowed with constant strings");
 		x->mode = Addressing_Invalid;
 		return;
-	}
-
-	bool REQUIRE = true;
-
-	Type *bt = base_type(x->type);
-	if (op.kind == Token_Mod    || op.kind == Token_ModEq ||
-	    op.kind == Token_ModMod || op.kind == Token_ModModEq) {
-		if (bt->kind == Type_Basic) switch (bt->Basic.kind) {
-		case Basic_u128: add_package_dependency(c, "runtime", "umodti3", REQUIRE); break;
-		case Basic_i128: add_package_dependency(c, "runtime", "modti3",  REQUIRE); break;
-		}
-	} else if (op.kind == Token_Quo || op.kind == Token_QuoEq) {
-		if (bt->kind == Type_Basic) switch (bt->Basic.kind) {
-		case Basic_complex32:     add_package_dependency(c, "runtime", "quo_complex32");     break;
-		case Basic_complex64:     add_package_dependency(c, "runtime", "quo_complex64");     break;
-		case Basic_complex128:    add_package_dependency(c, "runtime", "quo_complex128");    break;
-		case Basic_quaternion64:  add_package_dependency(c, "runtime", "quo_quaternion64");  break;
-		case Basic_quaternion128: add_package_dependency(c, "runtime", "quo_quaternion128"); break;
-		case Basic_quaternion256: add_package_dependency(c, "runtime", "quo_quaternion256"); break;
-
-		case Basic_u128: add_package_dependency(c, "runtime", "udivti3", REQUIRE); break;
-		case Basic_i128: add_package_dependency(c, "runtime", "divti3",  REQUIRE); break;
-		}
-	} else if (op.kind == Token_Mul || op.kind == Token_MulEq) {
-		if (bt->kind == Type_Basic) switch (bt->Basic.kind) {
-		case Basic_quaternion64:  add_package_dependency(c, "runtime", "mul_quaternion64");  break;
-		case Basic_quaternion128: add_package_dependency(c, "runtime", "mul_quaternion128"); break;
-		case Basic_quaternion256: add_package_dependency(c, "runtime", "mul_quaternion256"); break;
-
-
-		case Basic_u128:
-		case Basic_i128:
-			if (is_arch_wasm()) {
-				add_package_dependency(c, "runtime", "__multi3", REQUIRE);
-			}
-			break;
-		}
-	} else if (op.kind == Token_Shl || op.kind == Token_ShlEq) {
-		if (bt->kind == Type_Basic) switch (bt->Basic.kind) {
-		case Basic_u128:
-		case Basic_i128:
-			if (is_arch_wasm()) {
-				add_package_dependency(c, "runtime", "__ashlti3", REQUIRE);
-			}
-			break;
-		}
 	}
 
 	x->mode = Addressing_Value;
@@ -4457,6 +4589,27 @@ gb_internal void convert_to_typed(CheckerContext *c, Operand *operand, Type *tar
 		
 
 	case Type_Union:
+		// IMPORTANT NOTE HACK(bill): This is just to allow for comparisons against `0` with the `os.Error` type
+		// as a kind of transition period
+		if (!build_context.strict_style &&
+		    operand->mode == Addressing_Constant &&
+		    target_type->kind == Type_Named &&
+		    (c->pkg == nullptr || c->pkg->name != "os") &&
+		    target_type->Named.name == "Error") {
+			Entity *e = target_type->Named.type_name;
+			if (e->pkg && e->pkg->name == "os") {
+				if (is_exact_value_zero(operand->value) &&
+				    (operand->value.kind == ExactValue_Integer ||
+				     operand->value.kind == ExactValue_Float)) {
+					operand->mode = Addressing_Value;
+					target_type = t_untyped_nil;
+				     	operand->value = empty_exact_value;
+					update_untyped_expr_value(c, operand->expr, operand->value);
+					break;
+				}
+			}
+		}
+		// "fallthrough"
 		if (!is_operand_nil(*operand) && !is_operand_uninit(*operand)) {
 			TEMPORARY_ALLOCATOR_GUARD();
 
@@ -4591,7 +4744,8 @@ gb_internal bool check_index_value(CheckerContext *c, Type *main_type, bool open
 	check_expr_with_type_hint(c, &operand, index_value, type_hint);
 	if (operand.mode == Addressing_Invalid) {
 		if (value) *value = 0;
-		return false;
+		// NOTE(bill): return true here to propagate the errors better
+		return true;
 	}
 
 	Type *index_type = t_int;
@@ -4812,7 +4966,7 @@ gb_internal ExactValue get_constant_field_single(CheckerContext *c, ExactValue v
 							TypeAndValue tav = fv->value->tav;
 							if (success_) *success_ = true;
 							if (finish_) *finish_ = false;
-							return tav.value;;
+							return tav.value;
 						}
 					}
 
@@ -4887,7 +5041,6 @@ gb_internal ExactValue get_constant_field(CheckerContext *c, Operand const *oper
 				return value;
 			}
 		}
-
 		if (success_) *success_ = true;
 		return value;
 	} else if (value.kind == ExactValue_Quaternion) {
@@ -5127,13 +5280,28 @@ gb_internal Entity *check_selector(CheckerContext *c, Operand *operand, Ast *nod
 		add_entity_use(c, op_expr, e);
 		expr_entity = e;
 
-		if (e != nullptr && e->kind == Entity_ImportName && selector->kind == Ast_Ident) {
+		if (e != nullptr && (e->kind == Entity_Procedure || e->kind == Entity_ProcGroup) && selector->kind == Ast_Ident) {
+			gbString sel_str = expr_to_string(selector);
+			error(node, "'%s' is not declared by by '%.*s'", sel_str, LIT(e->token.string));
+			gb_string_free(sel_str);
+			operand->mode = Addressing_Invalid;
+			operand->expr = node;
+			return nullptr;
+		} else if (e != nullptr && e->kind == Entity_ImportName && selector->kind == Ast_Ident) {
 			// IMPORTANT NOTE(bill): This is very sloppy code but it's also very fragile
 			// It pretty much needs to be in this order and this way
 			// If you can clean this up, please do but be really careful
 			String import_name = op_name;
 			Scope *import_scope = e->ImportName.scope;
 			String entity_name = selector->Ident.token.string;
+
+			if (import_scope == nullptr) {
+				ERROR_BLOCK();
+				error(node, "'%.*s' is not imported in this file, '%.*s' is unavailable", LIT(import_name), LIT(entity_name));
+				operand->mode = Addressing_Invalid;
+				operand->expr = node;
+				return nullptr;
+			}
 
 			check_op_expr = false;
 			entity = scope_lookup_current(import_scope, entity_name);
@@ -5570,7 +5738,7 @@ gb_internal bool check_identifier_exists(Scope *s, Ast *node, bool nested = fals
 gb_internal bool check_no_copy_assignment(Operand const &o, String const &context) {
 	if (o.type && is_type_no_copy(o.type)) {
 		Ast *expr = unparen_expr(o.expr);
-		if (expr && o.mode != Addressing_Constant) {
+		if (expr && o.mode != Addressing_Constant && o.mode != Addressing_Type) {
 			if (expr->kind == Ast_CallExpr) {
 				// Okay
 			} else {
@@ -6204,7 +6372,9 @@ gb_internal CallArgumentError check_call_arguments_internal(CheckerContext *c, A
 			}
 
 			if (param_is_variadic) {
-				continue;
+				if (!named_variadic_param) {
+					continue;
+				}
 			}
 			score += eval_param_and_score(c, o, e->type, err, false, e, show_error);
 		}
@@ -7541,7 +7711,7 @@ gb_internal CallArgumentError check_polymorphic_record_type(CheckerContext *c, O
 			gbString s = gb_string_make_reserve(heap_allocator(), e->token.string.len+3);
 			s = gb_string_append_fmt(s, "%.*s(", LIT(e->token.string));
 
-			TypeTuple *tuple = get_record_polymorphic_params(e->type);
+			TypeTuple *tuple = get_record_polymorphic_params(bt);
 			if (tuple != nullptr) for_array(i, tuple->variables) {
 				Entity *v = tuple->variables[i];
 				String name = v->token.string;
@@ -7556,8 +7726,10 @@ gb_internal CallArgumentError check_polymorphic_record_type(CheckerContext *c, O
 						s = write_type_to_string(s, v->type, false);
 					}
 				} else if (v->kind == Entity_Constant) {
-					s = gb_string_append_fmt(s, "=");
-					s = write_exact_value_to_string(s, v->Constant.value);
+					if (v->Constant.value.kind != ExactValue_Invalid) {
+						s = gb_string_append_fmt(s, "=");
+						s = write_exact_value_to_string(s, v->Constant.value);
+					}
 				}
 			}
 			s = gb_string_append_fmt(s, ")");
@@ -9971,6 +10143,22 @@ gb_internal ExprKind check_compound_literal(CheckerContext *c, Operand *o, Ast *
 					is_constant = o->mode == Addressing_Constant;
 				}
 
+				if (elem->kind == Ast_BinaryExpr) {
+					switch (elem->BinaryExpr.op.kind) {
+					case Token_Or:
+						{
+							gbString x = expr_to_string(elem->BinaryExpr.left);
+							gbString y = expr_to_string(elem->BinaryExpr.right);
+							gbString e = expr_to_string(elem);
+							error(elem, "Was the following intended? '%s, %s'; if not, surround the expression with parentheses '(%s)'", x, y, e);
+							gb_string_free(e);
+							gb_string_free(y);
+							gb_string_free(x);
+						}
+						break;
+					}
+				}
+
 				check_assignment(c, o, t->BitSet.elem, str_lit("bit_set literal"));
 				if (o->mode == Addressing_Constant) {
 					i64 lower = t->BitSet.lower;
@@ -9979,7 +10167,9 @@ gb_internal ExprKind check_compound_literal(CheckerContext *c, Operand *o, Ast *
 					if (lower <= v && v <= upper) {
 						// okay
 					} else {
-						error(elem, "Bit field value out of bounds, %lld not in the range %lld .. %lld", v, lower, upper);
+						gbString s = expr_to_string(o->expr);
+						error(elem, "Bit field value out of bounds, %s (%lld) not in the range %lld .. %lld", s, v, lower, upper);
+						gb_string_free(s);
 						continue;
 					}
 				}
@@ -10460,7 +10650,8 @@ gb_internal ExprKind check_index_expr(CheckerContext *c, Operand *o, Ast *node, 
 			o->expr = node;
 			return kind;
 		} else if (ok && !is_type_matrix(t)) {
-			ExactValue value = type_and_value_of_expr(ie->expr).value;
+			TypeAndValue tav = type_and_value_of_expr(ie->expr);
+			ExactValue value = tav.value;
 			o->mode = Addressing_Constant;
 			bool success = false;
 			bool finish = false;
@@ -10737,7 +10928,7 @@ gb_internal ExprKind check_expr_base_internal(CheckerContext *c, Operand *o, Ast
 		case Token_context:
 			{
 				if (c->proc_name.len == 0 && c->curr_proc_sig == nullptr) {
-					error(node, "'context' is only allowed within procedures %p", c->curr_proc_decl);
+					error(node, "'context' is only allowed within procedures");
 					return kind;
 				}
 				if (unparen_expr(c->assignment_lhs_hint) == node) {

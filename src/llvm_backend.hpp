@@ -137,6 +137,12 @@ enum lbFunctionPassManagerKind {
 	lbFunctionPassManager_COUNT
 };
 
+struct lbPadType {
+	i64 padding;
+	i64 padding_align;
+	LLVMTypeRef type;
+};
+
 struct lbModule {
 	LLVMModuleRef mod;
 	LLVMContextRef ctx;
@@ -199,6 +205,9 @@ struct lbModule {
 	PtrMap<Ast *, lbAddr> exact_value_compound_literal_addr_map; // Key: Ast_CompoundLit
 
 	LLVMPassManagerRef function_pass_managers[lbFunctionPassManager_COUNT];
+
+	BlockingMutex pad_types_mutex;
+	Array<lbPadType> pad_types;
 };
 
 struct lbEntityCorrection {
@@ -398,7 +407,7 @@ gb_internal lbBlock *lb_create_block(lbProcedure *p, char const *name, bool appe
 
 gb_internal lbValue lb_const_nil(lbModule *m, Type *type);
 gb_internal lbValue lb_const_undef(lbModule *m, Type *type);
-gb_internal lbValue lb_const_value(lbModule *m, Type *type, ExactValue value, bool allow_local=true);
+gb_internal lbValue lb_const_value(lbModule *m, Type *type, ExactValue value, bool allow_local=true, bool is_rodata=false);
 gb_internal lbValue lb_const_bool(lbModule *m, Type *type, bool value);
 gb_internal lbValue lb_const_int(lbModule *m, Type *type, u64 value);
 

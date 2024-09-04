@@ -1404,6 +1404,10 @@ gb_internal bool lb_switch_stmt_can_be_trivial_jump_table(AstSwitchStmt *ss, boo
 
 	}
 
+	if (is_typeid) {
+		return false;
+	}
+
 	return true;
 }
 
@@ -1574,9 +1578,14 @@ gb_internal void lb_store_type_case_implicit(lbProcedure *p, Ast *clause, lbValu
 	GB_ASSERT(e != nullptr);
 	if (e->flags & EntityFlag_Value) {
 		// by value
-		GB_ASSERT(are_types_identical(e->type, value.type));
-		lbAddr x = lb_add_local(p, e->type, e, false);
-		lb_addr_store(p, x, value);
+		if (are_types_identical(e->type, value.type)) {
+			lbAddr x = lb_add_local(p, e->type, e, false);
+			lb_addr_store(p, x, value);
+		} else {
+			GB_ASSERT_MSG(are_types_identical(e->type, type_deref(value.type)), "%s", type_to_string(value.type));
+			lbAddr x = lb_add_local(p, e->type, e, false);
+			lb_addr_store(p, x, lb_emit_load(p, value));
+		}
 	} else {
 		if (!is_default_case) {
 			Type *clause_type = e->type;
@@ -1646,7 +1655,7 @@ gb_internal void lb_build_type_switch_stmt(lbProcedure *p, AstTypeSwitchStmt *ss
 		union_data = lb_emit_conv(p, parent_ptr, t_rawptr);
 		Type *union_type = type_deref(parent_ptr.type);
 		if (is_type_union_maybe_pointer(union_type)) {
-			tag = lb_emit_conv(p, lb_emit_comp_against_nil(p, Token_NotEq, union_data), t_int);
+			tag = lb_emit_conv(p, lb_emit_comp_against_nil(p, Token_NotEq, parent_value), t_int);
 		} else if (union_tag_size(union_type) == 0) {
 			tag = {}; // there is no tag for a zero sized union
 		} else {
@@ -2190,8 +2199,7 @@ gb_internal void lb_build_if_stmt(lbProcedure *p, Ast *node) {
 	// and `LLVMConstIntGetZExtValue()` calls below will be valid and `LLVMInstructionEraseFromParent()`
 	// will target the correct (& only) branch statement
 
-
-	if (cond.value && LLVMIsConstant(cond.value)) {
+	if (cond.value && LLVMIsAConstantInt(cond.value)) {
 		// NOTE(bill): Do a compile time short circuit for when the condition is constantly known.
 		// This done manually rather than relying on the SSA passes because sometimes the SSA passes
 		// miss some even if they are constantly known, especially with few optimization passes.

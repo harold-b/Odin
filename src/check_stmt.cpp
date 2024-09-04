@@ -199,6 +199,9 @@ gb_internal bool check_has_break(Ast *stmt, String const &label, bool implicit) 
 		}
 		break;
 
+	case Ast_DeferStmt:
+		return check_has_break(stmt->DeferStmt.stmt, label, implicit);
+
 	case Ast_BlockStmt:
 		return check_has_break_list(stmt->BlockStmt.stmts, label, implicit);
 
@@ -474,8 +477,15 @@ gb_internal Type *check_assignment_variable(CheckerContext *ctx, Operand *lhs, O
 			rhs->proc_group = nullptr;
 		}
 	} else {
+		Ast *ident_node = nullptr;
+
 		if (node->kind == Ast_Ident) {
-			ast_node(i, Ident, node);
+			ident_node = node;
+		} else if (node->kind == Ast_IndexExpr && node->IndexExpr.expr->kind == Ast_Ident) {
+			ident_node = node->IndexExpr.expr;
+		}
+		if (ident_node != nullptr) {
+			ast_node(i, Ident, ident_node);
 			e = scope_lookup(ctx->scope, i->token.string);
 			if (e != nullptr && e->kind == Entity_Variable) {
 				used = (e->flags & EntityFlag_Used) != 0; // NOTE(bill): Make backup just in case
@@ -817,7 +827,8 @@ gb_internal bool check_using_stmt_entity(CheckerContext *ctx, AstUsingStmt *us, 
 				if (f->kind == Entity_Variable) {
 					Entity *uvar = alloc_entity_using_variable(e, f->token, f->type, expr);
 					if (!is_ptr && e->flags & EntityFlag_Value) uvar->flags |= EntityFlag_Value;
-					if (e->flags & EntityFlag_Param) uvar->flags |= EntityFlag_Param;
+					if (e->flags & EntityFlag_Param)            uvar->flags |= EntityFlag_Param;
+					if (e->flags & EntityFlag_SoaPtrField)      uvar->flags |= EntityFlag_SoaPtrField;
 					Entity *prev = scope_insert(ctx->scope, uvar);
 					if (prev != nullptr) {
 						gbString expr_str = expr_to_string(expr);
@@ -1471,7 +1482,7 @@ gb_internal void check_type_switch_stmt(CheckerContext *ctx, Ast *node, u32 mod_
 			case_type = nullptr;
 		}
 		if (case_type == nullptr) {
-			case_type = x.type;
+			case_type = type_deref(x.type);
 		}
 		if (switch_kind == TypeSwitch_Any) {
 			if (!is_type_untyped(case_type)) {
@@ -1630,6 +1641,7 @@ gb_internal void check_range_stmt(CheckerContext *ctx, Ast *node, u32 mod_flags)
 
 	Ast *expr = unparen_expr(rs->expr);
 
+	bool is_range = false;
 	bool is_possibly_addressable = true;
 	isize max_val_count = 2;
 	if (is_ast_range(expr)) {
@@ -1638,6 +1650,7 @@ gb_internal void check_range_stmt(CheckerContext *ctx, Ast *node, u32 mod_flags)
 		Operand y = {};
 
 		is_possibly_addressable = false;
+		is_range = true;
 
 		bool ok = check_range(ctx, expr, true, &x, &y, nullptr);
 		if (!ok) {
@@ -1685,7 +1698,7 @@ gb_internal void check_range_stmt(CheckerContext *ctx, Ast *node, u32 mod_flags)
 					}
 				}
 			}
-			bool is_ptr = type_deref(operand.type);
+			bool is_ptr = is_type_pointer(type_deref(operand.type));
 			Type *t = base_type(type_deref(operand.type));
 
 			switch (t->kind) {
@@ -1725,6 +1738,7 @@ gb_internal void check_range_stmt(CheckerContext *ctx, Ast *node, u32 mod_flags)
 				break;
 
 			case Type_EnumeratedArray:
+				is_possibly_addressable = operand.mode == Addressing_Variable || is_ptr;
 				array_add(&vals, t->EnumeratedArray.elem);
 				array_add(&vals, t->EnumeratedArray.index);
 				break;
@@ -1837,7 +1851,7 @@ gb_internal void check_range_stmt(CheckerContext *ctx, Ast *node, u32 mod_flags)
 
 			if (rs->vals.count == 1) {
 				Type *t = type_deref(operand.type);
-				if (is_type_map(t) || is_type_bit_set(t)) {
+				if (t != NULL && (is_type_map(t) || is_type_bit_set(t))) {
 					gbString v = expr_to_string(rs->vals[0]);
 					defer (gb_string_free(v));
 					error_line("\tSuggestion: place parentheses around the expression\n");
@@ -1882,7 +1896,9 @@ gb_internal void check_range_stmt(CheckerContext *ctx, Ast *node, u32 mod_flags)
 			}
 			if (found == nullptr) {
 				entity = alloc_entity_variable(ctx->scope, token, type, EntityState_Resolved);
-				entity->flags |= EntityFlag_ForValue;
+				if (!is_range) {
+					entity->flags |= EntityFlag_ForValue;
+				}
 				entity->flags |= EntityFlag_Value;
 				entity->identifier = name;
 				entity->Variable.for_loop_parent_type = type_of_expr(expr);
@@ -2489,6 +2505,16 @@ gb_internal void check_return_stmt(CheckerContext *ctx, Ast *node) {
 			continue;
 		}
 		Ast *expr = unparen_expr(o.expr);
+		while (expr->kind == Ast_CallExpr && expr->CallExpr.proc->tav.mode == Addressing_Type) {
+			if (expr->CallExpr.args.count != 1) {
+				break;
+			}
+			Ast *arg = expr->CallExpr.args[0];
+			if (arg->kind == Ast_FieldValue || !are_types_identical(arg->tav.type, expr->tav.type)) {
+				break;
+			}
+			expr = unparen_expr(arg);
+		}
 
 		auto unsafe_return_error = [](Operand const &o, char const *msg, Type *extra_type=nullptr) {
 			gbString s = expr_to_string(o.expr);
@@ -2517,7 +2543,7 @@ gb_internal void check_return_stmt(CheckerContext *ctx, Ast *node) {
 			Entity *e = entity_of_node(x);
 			if (is_entity_local_variable(e)) {
 				unsafe_return_error(o, "the address of a local variable");
-			} else if(x->kind == Ast_CompoundLit) {
+			} else if (x->kind == Ast_CompoundLit) {
 				unsafe_return_error(o, "the address of a compound literal");
 			} else if (x->kind == Ast_IndexExpr) {
 				Entity *f = entity_of_node(x->IndexExpr.expr);
@@ -2531,6 +2557,14 @@ gb_internal void check_return_stmt(CheckerContext *ctx, Ast *node) {
 				if (f && (is_type_matrix(f->type) && is_entity_local_variable(f))) {
 					unsafe_return_error(o, "the address of an indexed variable", f->type);
 				}
+			}
+		} else if (expr->kind == Ast_SliceExpr) {
+			Ast *x = unparen_expr(expr->SliceExpr.expr);
+			Entity *e = entity_of_node(x);
+			if (is_entity_local_variable(e) && is_type_array(e->type)) {
+				unsafe_return_error(o, "a slice of a local variable");
+			} else if (x->kind == Ast_CompoundLit) {
+				unsafe_return_error(o, "a slice of a compound literal");
 			}
 		} else if (o.mode == Addressing_Constant && is_type_slice(o.type)) {
 			ERROR_BLOCK();
@@ -2676,6 +2710,7 @@ gb_internal void check_stmt_internal(CheckerContext *ctx, Ast *node, u32 flags) 
 				error(bs->label, "A branch statement's label name must be an identifier");
 				return;
 			}
+
 			Ast *ident = bs->label;
 			String name = ident->Ident.token.string;
 			Operand o = {};
@@ -2706,6 +2741,10 @@ gb_internal void check_stmt_internal(CheckerContext *ctx, Ast *node, u32 flags) 
 				}
 				break;
 
+			}
+
+			if (ctx->in_defer) {
+				error(bs->label, "A labelled '%.*s' cannot be used within a 'defer'", LIT(token.string));
 			}
 		}
 

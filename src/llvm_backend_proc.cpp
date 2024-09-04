@@ -1527,6 +1527,23 @@ gb_internal lbValue lb_build_builtin_simd_proc(lbProcedure *p, Ast *expr, TypeAn
 			return res;
 		}
 
+	case BuiltinProc_simd_reduce_any:
+	case BuiltinProc_simd_reduce_all:
+		{
+			char const *name = nullptr;
+			switch (builtin_id) {
+			case BuiltinProc_simd_reduce_any: name = "llvm.vector.reduce.or";  break;
+			case BuiltinProc_simd_reduce_all: name = "llvm.vector.reduce.and"; break;
+			}
+
+			LLVMTypeRef types[1] = { lb_type(p->module, arg0.type) };
+			LLVMValueRef args[1] = { arg0.value };
+
+			res.value = lb_call_intrinsic(p, name, args, gb_count_of(args), types, gb_count_of(types));
+			return res;
+		}
+
+
 	case BuiltinProc_simd_shuffle:
 		{
 			Type *vt = arg0.type;
@@ -1629,13 +1646,13 @@ gb_internal lbValue lb_build_builtin_simd_proc(lbProcedure *p, Ast *expr, TypeAn
 		}
 
 
-	case BuiltinProc_simd_add_sat:
-	case BuiltinProc_simd_sub_sat:
+	case BuiltinProc_simd_saturating_add:
+	case BuiltinProc_simd_saturating_sub:
 		{
 			char const *name = nullptr;
 			switch (builtin_id) {
-			case BuiltinProc_simd_add_sat: name = is_signed ? "llvm.sadd.sat" : "llvm.uadd.sat"; break;
-			case BuiltinProc_simd_sub_sat: name = is_signed ? "llvm.ssub.sat" : "llvm.usub.sat"; break;
+			case BuiltinProc_simd_saturating_add: name = is_signed ? "llvm.sadd.sat" : "llvm.uadd.sat"; break;
+			case BuiltinProc_simd_saturating_sub: name = is_signed ? "llvm.ssub.sat" : "llvm.usub.sat"; break;
 			}
 
 			LLVMTypeRef types[1] = {lb_type(p->module, arg0.type)};
@@ -1671,6 +1688,85 @@ gb_internal lbValue lb_build_builtin_simd_proc(lbProcedure *p, Ast *expr, TypeAn
 			return res;
 		}
 
+
+	case BuiltinProc_simd_gather:
+	case BuiltinProc_simd_scatter:
+	case BuiltinProc_simd_masked_load:
+	case BuiltinProc_simd_masked_store:
+	case BuiltinProc_simd_masked_expand_load:
+	case BuiltinProc_simd_masked_compress_store:
+		{
+			LLVMValueRef ptr = arg0.value;
+			LLVMValueRef val = arg1.value;
+			LLVMValueRef mask = arg2.value;
+
+			unsigned count = cast(unsigned)get_array_type_count(arg1.type);
+
+			LLVMTypeRef mask_type = LLVMVectorType(LLVMInt1TypeInContext(p->module->ctx), count);
+			mask = LLVMBuildTrunc(p->builder, mask, mask_type, "");
+
+			char const *name = nullptr;
+			switch (builtin_id) {
+			case BuiltinProc_simd_gather:                name = "llvm.masked.gather";        break;
+			case BuiltinProc_simd_scatter:               name = "llvm.masked.scatter";       break;
+			case BuiltinProc_simd_masked_load:           name = "llvm.masked.load";          break;
+			case BuiltinProc_simd_masked_store:          name = "llvm.masked.store";         break;
+			case BuiltinProc_simd_masked_expand_load:    name = "llvm.masked.expandload";    break;
+			case BuiltinProc_simd_masked_compress_store: name = "llvm.masked.compressstore"; break;
+			}
+			unsigned type_count = 2;
+			LLVMTypeRef types[2] = {
+				lb_type(p->module, arg1.type),
+				lb_type(p->module, arg0.type)
+			};
+
+			auto alignment = cast(unsigned long long)type_align_of(base_array_type(arg1.type));
+			LLVMValueRef align = LLVMConstInt(LLVMInt32TypeInContext(p->module->ctx), alignment, false);
+
+			unsigned arg_count = 4;
+			LLVMValueRef args[4] = {};
+			switch (builtin_id) {
+			case BuiltinProc_simd_masked_load:
+				types[1] = lb_type(p->module, t_rawptr);
+				/*fallthrough*/
+			case BuiltinProc_simd_gather:
+				args[0] = ptr;
+				args[1] = align;
+				args[2] = mask;
+				args[3] = val;
+				break;
+
+			case BuiltinProc_simd_masked_store:
+				types[1] = lb_type(p->module, t_rawptr);
+				/*fallthrough*/
+			case BuiltinProc_simd_scatter:
+				args[0] = val;
+				args[1] = ptr;
+				args[2] = align;
+				args[3] = mask;
+				break;
+
+			case BuiltinProc_simd_masked_expand_load:
+				arg_count = 3;
+				type_count = 1;
+				args[0] = ptr;
+				args[1] = mask;
+				args[2] = val;
+				break;
+
+			case BuiltinProc_simd_masked_compress_store:
+				arg_count = 3;
+				type_count = 1;
+				args[0] = val;
+				args[1] = ptr;
+				args[2] = mask;
+				break;
+			}
+
+			res.value = lb_call_intrinsic(p, name, args, arg_count, types, type_count);
+			return res;
+
+		}
 	}
 	GB_PANIC("Unhandled simd intrinsic: '%.*s'", LIT(builtin_procs[builtin_id].name));
 
@@ -2236,8 +2332,6 @@ gb_internal lbValue lb_build_builtin_proc(lbProcedure *p, Ast *expr, TypeAndValu
 	case BuiltinProc_overflow_add:
 	case BuiltinProc_overflow_sub:
 	case BuiltinProc_overflow_mul:
-	case BuiltinProc_add_sat:
-	case BuiltinProc_sub_sat:
 		{
 			Type *main_type = tv.type;
 			Type *type = main_type;
@@ -2256,16 +2350,12 @@ gb_internal lbValue lb_build_builtin_proc(lbProcedure *p, Ast *expr, TypeAndValu
 				case BuiltinProc_overflow_add: name = "llvm.uadd.with.overflow"; break;
 				case BuiltinProc_overflow_sub: name = "llvm.usub.with.overflow"; break;
 				case BuiltinProc_overflow_mul: name = "llvm.umul.with.overflow"; break;
-				case BuiltinProc_add_sat:      name = "llvm.uadd.sat"; break;
-				case BuiltinProc_sub_sat:      name = "llvm.usub.sat"; break;
 				}
 			} else {
 				switch (id) {
 				case BuiltinProc_overflow_add: name = "llvm.sadd.with.overflow"; break;
 				case BuiltinProc_overflow_sub: name = "llvm.ssub.with.overflow"; break;
 				case BuiltinProc_overflow_mul: name = "llvm.smul.with.overflow"; break;
-				case BuiltinProc_add_sat:      name = "llvm.sadd.sat"; break;
-				case BuiltinProc_sub_sat:      name = "llvm.ssub.sat"; break;
 				}
 			}
 			LLVMTypeRef types[1] = {lb_type(p->module, type)};
@@ -2288,6 +2378,39 @@ gb_internal lbValue lb_build_builtin_proc(lbProcedure *p, Ast *expr, TypeAndValu
 				res.value = LLVMBuildExtractValue(p->builder, res.value, 0, "");
 				res.type = type;
 			}
+			return res;
+		}
+
+	case BuiltinProc_saturating_add:
+	case BuiltinProc_saturating_sub:
+		{
+			Type *main_type = tv.type;
+			Type *type = main_type;
+
+			lbValue x = lb_build_expr(p, ce->args[0]);
+			lbValue y = lb_build_expr(p, ce->args[1]);
+			x = lb_emit_conv(p, x, type);
+			y = lb_emit_conv(p, y, type);
+
+			char const *name = nullptr;
+			if (is_type_unsigned(type)) {
+				switch (id) {
+				case BuiltinProc_saturating_add: name = "llvm.uadd.sat"; break;
+				case BuiltinProc_saturating_sub: name = "llvm.usub.sat"; break;
+				}
+			} else {
+				switch (id) {
+				case BuiltinProc_saturating_add: name = "llvm.sadd.sat"; break;
+				case BuiltinProc_saturating_sub: name = "llvm.ssub.sat"; break;
+				}
+			}
+			LLVMTypeRef types[1] = {lb_type(p->module, type)};
+
+			LLVMValueRef args[2] = { x.value, y.value };
+
+			lbValue res = {};
+			res.value = lb_call_intrinsic(p, name, args, gb_count_of(args), types, gb_count_of(types));
+			res.type = type;
 			return res;
 		}
 
@@ -2754,6 +2877,31 @@ gb_internal lbValue lb_build_builtin_proc(lbProcedure *p, Ast *expr, TypeAndValu
 			LLVMValueRef inline_asm = nullptr;
 
 			switch (build_context.metrics.arch) {
+			case TargetArch_riscv64:
+				{
+					GB_ASSERT(arg_count <= 7);
+
+					char asm_string[] = "ecall";
+					gbString constraints = gb_string_make(heap_allocator(), "={a0}");
+					for (unsigned i = 0; i < arg_count; i++) {
+						constraints = gb_string_appendc(constraints, ",{");
+						static char const *regs[] = {
+							"a7",
+							"a0",
+							"a1",
+							"a2",
+							"a3",
+							"a4",
+							"a5",
+							"a6"
+						};
+						constraints = gb_string_appendc(constraints, regs[i]);
+						constraints = gb_string_appendc(constraints, "}");
+					}
+
+					inline_asm = llvm_get_inline_asm(func_type, make_string_c(asm_string), make_string_c(constraints));
+				}
+				break;
 			case TargetArch_amd64:
 				{
 					GB_ASSERT(arg_count <= 7);
@@ -3446,9 +3594,9 @@ gb_internal lbValue lb_build_call_expr_internal(lbProcedure *p, Ast *expr) {
 							if (is_type_untyped_nil(arg.type)) {
 								arg = lb_const_nil(p->module, t_rawptr);
 							}
-							array_add(&args, lb_emit_conv(p, arg, c_vararg_promote_type(default_type(arg.type))));
+							array_add(&args, lb_emit_c_vararg(p, arg, arg.type));
 						} else {
-							array_add(&args, lb_emit_conv(p, arg, c_vararg_promote_type(elem_type)));
+							array_add(&args, lb_emit_c_vararg(p, arg, elem_type));
 						}
 					}
 					break;
@@ -3574,15 +3722,15 @@ gb_internal lbValue lb_build_call_expr_internal(lbProcedure *p, Ast *expr) {
 						if (is_type_untyped_nil(arg.type)) {
 							arg = lb_const_nil(p->module, t_rawptr);
 						}
-						array_add(&args, lb_emit_conv(p, arg, c_vararg_promote_type(default_type(arg.type))));
+						array_add(&args, lb_emit_c_vararg(p, arg, arg.type));
 					} else {
-						array_add(&args, lb_emit_conv(p, arg, c_vararg_promote_type(elem_type)));
+						array_add(&args, lb_emit_c_vararg(p, arg, elem_type));
 					}
 				}
 			} else {
 				lbValue value = lb_build_expr(p, fv->value);
 				GB_ASSERT(!is_type_tuple(value.type));
-				array_add(&args, lb_emit_conv(p, value, c_vararg_promote_type(value.type)));
+				array_add(&args, lb_emit_c_vararg(p, value, value.type));
 			}
 		} else {
 			lbValue value = lb_build_expr(p, fv->value);

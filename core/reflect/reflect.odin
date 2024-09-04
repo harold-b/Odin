@@ -143,7 +143,7 @@ when !ODIN_NO_RTTI {
 @(require_results)
 any_base :: proc(v: any) -> any {
 	v := v
-	if v != nil {
+	if v.id != nil {
 		v.id = typeid_base(v.id)
 	}
 	return v
@@ -151,7 +151,7 @@ any_base :: proc(v: any) -> any {
 @(require_results)
 any_core :: proc(v: any) -> any {
 	v := v
-	if v != nil {
+	if v.id != nil {
 		v.id = typeid_core(v.id)
 	}
 	return v
@@ -496,6 +496,64 @@ struct_field_offsets :: proc(T: typeid) -> []uintptr {
 	return nil
 }
 
+Struct_Field_Count_Method :: enum {
+	Top_Level,
+	Using,
+	Recursive,
+}
+
+/*
+Counts the number of fields in a struct
+
+This procedure returns the number of fields in a struct, counting in one of three ways:
+- .Top_Level: Only counts the top-level fields
+- .Using:     Same count as .Top_Level, and adds the field count of any `using s: Struct` it encounters (in addition to itself)
+- .Recursive: The count of all top-level fields, plus the count of any child struct's fields, recursively
+
+Inputs:
+- T:      The struct type
+- method: The counting method
+
+Returns:
+- The `count`, enumerated using the `method`, which will be `0` if the type is not a struct
+
+Example:
+	symbols_loaded, ok := dynlib.initialize_symbols(&game_api, "game.dll")
+	symbols_expected   := reflect.struct_field_count(Game_Api) - API_PRIVATE_COUNT
+
+	if symbols_loaded != symbols_expected {
+		fmt.eprintf("Expected %v symbols, got %v", symbols_expected, symbols_loaded)
+		return
+	}
+*/
+@(require_results)
+struct_field_count :: proc(T: typeid, method := Struct_Field_Count_Method.Top_Level) -> (count: int) {
+	ti := runtime.type_info_base(type_info_of(T))
+	if s, ok := ti.variant.(runtime.Type_Info_Struct); ok {
+		switch method {
+		case .Top_Level:
+			return int(s.field_count)
+
+		case .Using:
+			count = int(s.field_count)
+			for type, i in s.types[:s.field_count] {
+				if s.usings[i] {
+					count += struct_field_count(type.id)
+				}
+			}
+
+		case .Recursive:
+			count = int(s.field_count)
+			for type in s.types[:s.field_count] {
+				count += struct_field_count(type.id)
+			}
+
+		case: return 0
+		}
+	}
+	return
+}
+
 @(require_results)
 struct_fields_zipped :: proc(T: typeid) -> (fields: #soa[]Struct_Field) {
 	ti := runtime.type_info_base(type_info_of(T))
@@ -709,7 +767,7 @@ union_variant_type_info :: proc(a: any) -> ^Type_Info {
 
 @(require_results)
 type_info_union_is_pure_maybe :: proc(info: runtime.Type_Info_Union) -> bool {
-	return len(info.variants) == 1 && is_pointer(info.variants[0])
+	return len(info.variants) == 1 && is_pointer_internally(info.variants[0])
 }
 
 @(require_results)
@@ -956,6 +1014,74 @@ bit_set_is_big_endian :: proc(value: any, loc := #caller_location) -> bool {
 	panic("expected a bit_set to reflect.bit_set_is_big_endian", loc)
 }
 
+
+Bit_Field :: struct {
+	name:   string,
+	type:   ^Type_Info,
+	size:   uintptr,     // Size in bits
+	offset: uintptr,     // Offset in bits
+	tag:    Struct_Tag,
+}
+
+@(require_results)
+bit_fields_zipped :: proc(T: typeid) -> (fields: #soa[]Bit_Field) {
+	ti := runtime.type_info_base(type_info_of(T))
+	if s, ok := ti.variant.(runtime.Type_Info_Bit_Field); ok {
+		return soa_zip(
+			name   = s.names[:s.field_count],
+			type   = s.types[:s.field_count],
+			size   = s.bit_sizes[:s.field_count],
+			offset = s.bit_offsets[:s.field_count],
+			tag      = ([^]Struct_Tag)(s.tags)[:s.field_count],
+		)
+	}
+	return nil
+}
+
+@(require_results)
+bit_field_names :: proc(T: typeid) -> []string {
+	ti := runtime.type_info_base(type_info_of(T))
+	if s, ok := ti.variant.(runtime.Type_Info_Bit_Field); ok {
+		return s.names[:s.field_count]
+	}
+	return nil
+}
+
+@(require_results)
+bit_field_types :: proc(T: typeid) -> []^Type_Info {
+	ti := runtime.type_info_base(type_info_of(T))
+	if s, ok := ti.variant.(runtime.Type_Info_Bit_Field); ok {
+		return s.types[:s.field_count]
+	}
+	return nil
+}
+
+@(require_results)
+bit_field_sizes :: proc(T: typeid) -> []uintptr {
+	ti := runtime.type_info_base(type_info_of(T))
+	if s, ok := ti.variant.(runtime.Type_Info_Bit_Field); ok {
+		return s.bit_sizes[:s.field_count]
+	}
+	return nil
+}
+
+@(require_results)
+bit_field_offsets :: proc(T: typeid) -> []uintptr {
+	ti := runtime.type_info_base(type_info_of(T))
+	if s, ok := ti.variant.(runtime.Type_Info_Bit_Field); ok {
+		return s.bit_offsets[:s.field_count]
+	}
+	return nil
+}
+
+@(require_results)
+bit_field_tags :: proc(T: typeid) -> []Struct_Tag {
+	ti := runtime.type_info_base(type_info_of(T))
+	if s, ok := ti.variant.(runtime.Type_Info_Bit_Field); ok {
+		return transmute([]Struct_Tag)s.tags[:s.field_count]
+	}
+	return nil
+}
 
 @(require_results)
 as_bool :: proc(a: any) -> (value: bool, valid: bool) {

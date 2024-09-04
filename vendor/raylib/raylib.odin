@@ -84,7 +84,6 @@ package raylib
 import "core:c"
 import "core:fmt"
 import "core:mem"
-import "core:strings"
 
 import "core:math/linalg"
 _ :: linalg
@@ -447,9 +446,9 @@ VrStereoConfig :: struct #align(4) {
 
 // File path list
 FilePathList :: struct {
-    capacity: c.uint,                     // Filepaths max entries
-    count:    c.uint,                     // Filepaths entries count
-    paths:    [^]cstring,                 // Filepaths entries
+	capacity: c.uint,                     // Filepaths max entries
+	count:    c.uint,                     // Filepaths entries count
+	paths:    [^]cstring,                 // Filepaths entries
 }
 
 // Automation event
@@ -1015,8 +1014,8 @@ foreign lib {
 
 	SetRandomSeed  		 :: proc(seed: c.uint) ---                      // Set the seed for the random number generator
 	GetRandomValue 		 :: proc(min, max: c.int) -> c.int ---          // Get a random value between min and max (both included)
-	LoadRandomSequence 	 :: proc(count : c.uint, min, max: c.int) --- 	// Load random values sequence, no values repeated
-	UnloadRandomSequence :: proc(sequence : ^c.int) ---             	// Unload random values sequence
+	LoadRandomSequence 	 :: proc(count: c.uint, min, max: c.int) --- 	// Load random values sequence, no values repeated
+	UnloadRandomSequence     :: proc(sequence: ^c.int) ---                  // Unload random values sequence
 
 	// Misc. functions
 	TakeScreenshot :: proc(fileName: cstring) ---        // Takes a screenshot of current screen (filename extension defines format)
@@ -1029,7 +1028,6 @@ foreign lib {
 	SetTraceLogLevel :: proc(logLevel: TraceLogLevel) ---                                       // Set the current threshold (minimum) log level
 	MemAlloc         :: proc(size: c.uint) -> rawptr ---                                        // Internal memory allocator
 	MemRealloc       :: proc(ptr: rawptr, size: c.uint) -> rawptr ---                           // Internal memory reallocator
-	MemFree          :: proc(ptr: rawptr) ---                                                   // Internal memory free
 
 	// Set custom callbacks
 	// WARNING: Callbacks setup is intended for advance users
@@ -1256,7 +1254,7 @@ foreign lib {
 	LoadImage            :: proc(fileName: cstring) -> Image ---                                                               // Load image from file into CPU memory (RAM)
 	LoadImageRaw         :: proc(fileName: cstring, width, height: c.int, format: PixelFormat, headerSize: c.int) -> Image --- // Load image from RAW file data
 	LoadImageSvg         :: proc(fileNameOrString: cstring, width, height: c.int) -> Image ---                                 // Load image from SVG file data or string with specified size
-	LoadImageAnim        :: proc(fileName: cstring, frames: [^]c.int) -> Image ---                                             // Load image sequence from file (frames appended to image.data)
+	LoadImageAnim        :: proc(fileName: cstring, frames: ^c.int) -> Image ---                                               // Load image sequence from file (frames appended to image.data)
 	LoadImageFromMemory  :: proc(fileType: cstring, fileData: rawptr, dataSize: c.int) -> Image ---                            // Load image from memory buffer, fileType refers to extension: i.e. '.png'
 	LoadImageFromTexture :: proc(texture: Texture2D) -> Image ---                                                              // Load image from GPU texture data
 	LoadImageFromScreen  :: proc() -> Image ---                                                                                // Load image from screen buffer and (screenshot)
@@ -1424,9 +1422,9 @@ foreign lib {
 
 	LoadUTF8             :: proc(codepoints: [^]rune, length: c.int) -> [^]byte --- // Load UTF-8 text encoded from codepoints array
 	UnloadUTF8           :: proc(text: [^]byte) ---                                 // Unload UTF-8 text encoded from codepoints array
-	LoadCodepoints       :: proc(text: rawptr, count: ^c.int) -> [^]rune ---        // Load all codepoints from a UTF-8 text string, codepoints count returned by parameter
+	LoadCodepoints       :: proc(text: cstring, count: ^c.int) -> [^]rune ---       // Load all codepoints from a UTF-8 text string, codepoints count returned by parameter
 	UnloadCodepoints     :: proc(codepoints: [^]rune) ---                           // Unload codepoints data from memory
-	GetCodepointCount    :: proc(text : cstring) -> c.int ---                       // Get total number of codepoints in a UTF-8 encoded string
+	GetCodepointCount    :: proc(text: cstring) -> c.int ---                        // Get total number of codepoints in a UTF-8 encoded string
 	GetCodepoint         :: proc(text: cstring, codepointSize: ^c.int) -> rune ---  // Get next codepoint in a UTF-8 encoded string, 0x3f('?') is returned on failure
 	GetCodepointNext     :: proc(text: cstring, codepointSize: ^c.int) -> rune ---  // Get next codepoint in a UTF-8 encoded string, 0x3f('?') is returned on failure
 	GetCodepointPrevious :: proc(text: cstring, codepointSize: ^c.int) -> rune ---  // Get previous codepoint in a UTF-8 encoded string, 0x3f('?') is returned on failure
@@ -1684,8 +1682,25 @@ TextFormat :: proc(text: cstring, args: ..any) -> cstring {
 
 // Text formatting with variables (sprintf style) and allocates (must be freed with 'MemFree')
 TextFormatAlloc :: proc(text: cstring, args: ..any) -> cstring {
-	str := fmt.tprintf(string(text), ..args)
-	return strings.clone_to_cstring(str, MemAllocator())
+	return fmt.caprintf(string(text), ..args, allocator=MemAllocator())
+}
+
+
+// Internal memory free
+MemFree :: proc{
+	MemFreePtr,
+	MemFreeCstring,
+}
+
+
+@(default_calling_convention="c")
+foreign lib {
+	@(link_name="MemFree")
+	MemFreePtr :: proc(ptr: rawptr) ---
+}
+
+MemFreeCstring :: proc "c" (s: cstring) {
+	MemFreePtr(rawptr(s))
 }
 
 

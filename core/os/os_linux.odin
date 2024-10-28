@@ -242,10 +242,13 @@ F_SETFL: int : 4 /* Set file flags */
 
 // NOTE(zangent): These are OS specific!
 // Do not mix these up!
-RTLD_LAZY         :: 0x001
-RTLD_NOW          :: 0x002
-RTLD_BINDING_MASK :: 0x3
-RTLD_GLOBAL       :: 0x100
+RTLD_LAZY         :: 0x0001
+RTLD_NOW          :: 0x0002
+RTLD_BINDING_MASK :: 0x0003
+RTLD_GLOBAL       :: 0x0100
+RTLD_NOLOAD       :: 0x0004
+RTLD_DEEPBIND     :: 0x0008
+RTLD_NODELETE     :: 0x1000
 
 socklen_t :: c.int
 
@@ -914,7 +917,7 @@ absolute_path_from_handle :: proc(fd: Handle) -> (string, Error) {
 }
 
 @(require_results)
-absolute_path_from_relative :: proc(rel: string) -> (path: string, err: Error) {
+absolute_path_from_relative :: proc(rel: string, allocator := context.allocator) -> (path: string, err: Error) {
 	rel := rel
 	if rel == "" {
 		rel = "."
@@ -929,9 +932,7 @@ absolute_path_from_relative :: proc(rel: string) -> (path: string, err: Error) {
 	}
 	defer _unix_free(rawptr(path_ptr))
 
-	path = strings.clone(string(path_ptr))
-
-	return path, nil
+	return strings.clone(string(path_ptr), allocator)
 }
 
 access :: proc(path: string, mask: int) -> (bool, Error) {
@@ -985,7 +986,8 @@ unset_env :: proc(key: string) -> Error {
 }
 
 @(require_results)
-get_current_directory :: proc() -> string {
+get_current_directory :: proc(allocator := context.allocator) -> string {
+	context.allocator = allocator
 	// NOTE(tetra): I would use PATH_MAX here, but I was not able to find
 	// an authoritative value for it across all systems.
 	// The largest value I could find was 4096, so might as well use the page size.

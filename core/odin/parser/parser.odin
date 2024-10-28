@@ -161,11 +161,36 @@ parse_file :: proc(p: ^Parser, file: ^ast.File) -> bool {
 
 	docs := p.lead_comment
 
-	p.file.pkg_token = expect_token(p, .Package)
-	if p.file.pkg_token.kind != .Package {
-		return false
+	invalid_pre_package_token: Maybe(tokenizer.Token)
+
+	for p.curr_tok.kind != .Package && p.curr_tok.kind != .EOF {
+		if p.curr_tok.kind == .Comment {
+			consume_comment_groups(p, p.prev_tok)
+		} else if p.curr_tok.kind == .File_Tag {
+			append(&p.file.tags, p.curr_tok)
+			advance_token(p)
+		} else {
+			if invalid_pre_package_token == nil {
+				invalid_pre_package_token = p.curr_tok
+			}
+
+			advance_token(p)
+		}
 	}
 
+	if p.curr_tok.kind != .Package {
+		t := invalid_pre_package_token.? or_else p.curr_tok
+		error(p, t.pos, "Expected a package declaration at the start of the file")
+		return false
+	}
+	
+	p.file.pkg_token = expect_token(p, .Package)
+	
+	if ippt, ok := invalid_pre_package_token.?; ok {
+		error(p, ippt.pos, "Expected only comments or lines starting with '#+' before the package declaration")
+		return false
+	}
+	
 	pkg_name := expect_token_after(p, .Ident, "package")
 	if pkg_name.kind == .Ident {
 		switch name := pkg_name.text; {
@@ -2277,6 +2302,16 @@ parse_operand :: proc(p: ^Parser, lhs: bool) -> ^ast.Expr {
 			bd.name = name.text
 			return bd
 
+		case "caller_expression":
+			bd := ast.new(ast.Basic_Directive, tok.pos, end_pos(name))
+			bd.tok  = tok
+			bd.name = name.text
+
+			if peek_token_kind(p, .Open_Paren) {
+				return parse_call_expr(p, bd)
+			}
+			return bd
+
 		case "location", "exists", "load", "load_directory", "load_hash", "hash", "assert", "panic", "defined", "config":
 			bd := ast.new(ast.Basic_Directive, tok.pos, end_pos(name))
 			bd.tok  = tok
@@ -2575,9 +2610,10 @@ parse_operand :: proc(p: ^Parser, lhs: bool) -> ^ast.Expr {
 	case .Struct:
 		tok := expect_token(p, .Struct)
 
-		poly_params: ^ast.Field_List
-		align:        ^ast.Expr
-		field_align:  ^ast.Expr
+		poly_params:     ^ast.Field_List
+		align:           ^ast.Expr
+		min_field_align: ^ast.Expr
+		max_field_align: ^ast.Expr
 		is_packed:    bool
 		is_raw_union: bool
 		is_no_copy:   bool
@@ -2610,10 +2646,21 @@ parse_operand :: proc(p: ^Parser, lhs: bool) -> ^ast.Expr {
 				}
 				align = parse_expr(p, true)
 			case "field_align":
-				if field_align != nil {
+				if min_field_align != nil {
 					error(p, tag.pos, "duplicate struct tag '#%s'", tag.text)
 				}
-				field_align = parse_expr(p, true)
+				warn(p, tag.pos, "#field_align has been deprecated in favour of #min_field_align")
+				min_field_align = parse_expr(p, true)
+			case "min_field_align":
+				if min_field_align != nil {
+					error(p, tag.pos, "duplicate struct tag '#%s'", tag.text)
+				}
+				min_field_align = parse_expr(p, true)
+			case "max_field_align":
+				if max_field_align != nil {
+					error(p, tag.pos, "duplicate struct tag '#%s'", tag.text)
+				}
+				max_field_align = parse_expr(p, true)
 			case "raw_union":
 				if is_raw_union {
 					error(p, tag.pos, "duplicate struct tag '#%s'", tag.text)
@@ -2654,16 +2701,17 @@ parse_operand :: proc(p: ^Parser, lhs: bool) -> ^ast.Expr {
 		close := expect_closing_brace_of_field_list(p)
 
 		st := ast.new(ast.Struct_Type, tok.pos, end_pos(close))
-		st.poly_params   = poly_params
-		st.align         = align
-		st.field_align   = field_align
-		st.is_packed     = is_packed
-		st.is_raw_union  = is_raw_union
-		st.is_no_copy    = is_no_copy
-		st.fields        = fields
-		st.name_count    = name_count
-		st.where_token   = where_token
-		st.where_clauses = where_clauses
+		st.poly_params     = poly_params
+		st.align           = align
+		st.min_field_align = min_field_align
+		st.max_field_align = max_field_align
+		st.is_packed       = is_packed
+		st.is_raw_union    = is_raw_union
+		st.is_no_copy      = is_no_copy
+		st.fields          = fields
+		st.name_count      = name_count
+		st.where_token     = where_token
+		st.where_clauses   = where_clauses
 		return st
 
 	case .Union:
@@ -3648,6 +3696,8 @@ parse_value_decl :: proc(p: ^Parser, names: []^ast.Expr, docs: ^ast.Comment_Grou
 		}
 	}
 
+	end := p.prev_tok
+
 	if p.expr_level >= 0 {
 		end: ^ast.Expr
 		if !is_mutable && len(values) > 0 {
@@ -3667,7 +3717,7 @@ parse_value_decl :: proc(p: ^Parser, names: []^ast.Expr, docs: ^ast.Comment_Grou
 		}
 	}
 
-	decl := ast.new(ast.Value_Decl, names[0].pos, end_pos(p.prev_tok))
+	decl := ast.new(ast.Value_Decl, names[0].pos, end_pos(end))
 	decl.docs = docs
 	decl.names = names
 	decl.type = type

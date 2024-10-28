@@ -1,5 +1,5 @@
-//+private
-//+build darwin, netbsd, freebsd, openbsd
+#+private
+#+build darwin, netbsd, freebsd, openbsd
 package os2
 
 import "base:runtime"
@@ -163,7 +163,7 @@ _process_start :: proc(desc: Process_Desc) -> (process: Process, err: Error) {
 			#assert(len(posix.Errno) < max(u8))
 			errno := u8(posix.errno())
 			posix.write(parent_fd, &errno, 1)
-			runtime.trap()
+			posix.exit(126)
 		}
 
 		null := posix.open("/dev/null", {.RDWR})
@@ -223,7 +223,6 @@ _process_start :: proc(desc: Process_Desc) -> (process: Process, err: Error) {
 			return
 		}
 
-		process.pid = int(pid)
 		process, _ = _process_open(int(pid), {})
 		return
 	}

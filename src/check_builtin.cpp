@@ -1632,6 +1632,22 @@ gb_internal bool check_builtin_procedure_directive(CheckerContext *c, Operand *o
 
 		operand->type = t_source_code_location;
 		operand->mode = Addressing_Value;
+	} else if (name == "caller_expression") {
+		if (ce->args.count > 1) {
+			error(ce->args[0], "'#caller_expression' expects either 0 or 1 arguments, got %td", ce->args.count);
+		}
+		if (ce->args.count > 0) {
+			Ast *arg = ce->args[0];
+			Operand o = {};
+			Entity *e = check_ident(c, &o, arg, nullptr, nullptr, true);
+			if (e == nullptr || (e->flags & EntityFlag_Param) == 0) {
+				error(ce->args[0], "'#caller_expression' expected a valid earlier parameter name");
+			}
+			arg->Ident.entity = e;
+		}
+
+		operand->type = t_string;
+		operand->mode = Addressing_Value;
 	} else if (name == "exists") {
 		if (ce->args.count != 1) {
 			error(ce->close, "'#exists' expects 1 argument, got %td", ce->args.count);
@@ -2044,8 +2060,8 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 		bool ok = check_builtin_simd_operation(c, operand, call, id, type_hint);
 		if (!ok) {
 			operand->type = t_invalid;
+			operand->mode = Addressing_Value;
 		}
-		operand->mode = Addressing_Value;
 		operand->value = {};
 		operand->expr = call;
 		return ok;
@@ -3082,7 +3098,7 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 			// Okay
 		} else if (!is_type_ordered(type) || !(is_type_numeric(type) || is_type_string(type))) {
 			gbString type_str = type_to_string(original_type);
-			error(call, "Expected a ordered numeric type to 'min', got '%s'", type_str);
+			error(call, "Expected an ordered numeric type to 'min', got '%s'", type_str);
 			gb_string_free(type_str);
 			return false;
 		}
@@ -3168,7 +3184,7 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 			if (!is_type_ordered(b.type) || !(is_type_numeric(b.type) || is_type_string(b.type))) {
 				gbString type_str = type_to_string(b.type);
 				error(call,
-				      "Expected a ordered numeric type to 'min', got '%s'",
+				      "Expected an ordered numeric type to 'min', got '%s'",
 				      type_str);
 				gb_string_free(type_str);
 				return false;
@@ -3251,7 +3267,7 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 			// Okay
 		} else if (!is_type_ordered(type) || !(is_type_numeric(type) || is_type_string(type))) {
 			gbString type_str = type_to_string(original_type);
-			error(call, "Expected a ordered numeric type to 'max', got '%s'", type_str);
+			error(call, "Expected an ordered numeric type to 'max', got '%s'", type_str);
 			gb_string_free(type_str);
 			return false;
 		}
@@ -3342,7 +3358,7 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 			if (!is_type_ordered(b.type) || !(is_type_numeric(b.type) || is_type_string(b.type))) {
 				gbString type_str = type_to_string(b.type);
 				error(arg,
-				      "Expected a ordered numeric type to 'max', got '%s'",
+				      "Expected an ordered numeric type to 'max', got '%s'",
 				      type_str);
 				gb_string_free(type_str);
 				return false;
@@ -3472,7 +3488,7 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 		Type *type = operand->type;
 		if (!is_type_ordered(type) || !(is_type_numeric(type) || is_type_string(type))) {
 			gbString type_str = type_to_string(operand->type);
-			error(call, "Expected a ordered numeric or string type to 'clamp', got '%s'", type_str);
+			error(call, "Expected an ordered numeric or string type to 'clamp', got '%s'", type_str);
 			gb_string_free(type_str);
 			return false;
 		}
@@ -3489,7 +3505,7 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 		}
 		if (!is_type_ordered(y.type) || !(is_type_numeric(y.type) || is_type_string(y.type))) {
 			gbString type_str = type_to_string(y.type);
-			error(call, "Expected a ordered numeric or string type to 'clamp', got '%s'", type_str);
+			error(call, "Expected an ordered numeric or string type to 'clamp', got '%s'", type_str);
 			gb_string_free(type_str);
 			return false;
 		}
@@ -3500,7 +3516,7 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 		}
 		if (!is_type_ordered(z.type) || !(is_type_numeric(z.type) || is_type_string(z.type))) {
 			gbString type_str = type_to_string(z.type);
-			error(call, "Expected a ordered numeric or string type to 'clamp', got '%s'", type_str);
+			error(call, "Expected an ordered numeric or string type to 'clamp', got '%s'", type_str);
 			gb_string_free(type_str);
 			return false;
 		}
@@ -4953,16 +4969,14 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 			check_assignment(c, &x, elem, builtin_name);
 
 			Type *t = type_deref(operand->type);
-			switch (id) {
-			case BuiltinProc_atomic_add:
-			case BuiltinProc_atomic_sub:
-				if (!is_type_numeric(t)) {
+			if (id != BuiltinProc_atomic_exchange) {
+				if (!is_type_integer_like(t)) {
 					gbString str = type_to_string(t);
-					error(operand->expr, "Expected a numeric type for '%.*s', got %s", LIT(builtin_name), str);
+					error(operand->expr, "Expected an integer type for '%.*s', got %s", LIT(builtin_name), str);
 					gb_string_free(str);
 				} else if (is_type_different_to_arch_endianness(t)) {
 					gbString str = type_to_string(t);
-					error(operand->expr, "Expected a numeric type of the same platform endianness for '%.*s', got %s", LIT(builtin_name), str);
+					error(operand->expr, "Expected an integer type of the same platform endianness for '%.*s', got %s", LIT(builtin_name), str);
 					gb_string_free(str);
 				}
 			}
@@ -4998,19 +5012,16 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 			}
 
 			Type *t = type_deref(operand->type);
-			switch (id) {
-			case BuiltinProc_atomic_add_explicit:
-			case BuiltinProc_atomic_sub_explicit:
-				if (!is_type_numeric(t)) {
+			if (id != BuiltinProc_atomic_exchange_explicit) {
+				if (!is_type_integer_like(t)) {
 					gbString str = type_to_string(t);
-					error(operand->expr, "Expected a numeric type for '%.*s', got %s", LIT(builtin_name), str);
+					error(operand->expr, "Expected an integer type for '%.*s', got %s", LIT(builtin_name), str);
 					gb_string_free(str);
 				} else if (is_type_different_to_arch_endianness(t)) {
 					gbString str = type_to_string(t);
-					error(operand->expr, "Expected a numeric type of the same platform endianness for '%.*s', got %s", LIT(builtin_name), str);
+					error(operand->expr, "Expected an integer type of the same platform endianness for '%.*s', got %s", LIT(builtin_name), str);
 					gb_string_free(str);
 				}
-				break;
 			}
 
 			operand->type = elem;

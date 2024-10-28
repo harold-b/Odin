@@ -204,7 +204,7 @@ ENOPROTOOPT     :: _Platform_Error.ENOPROTOOPT
 EPROTONOSUPPORT :: _Platform_Error.EPROTONOSUPPORT
 ESOCKTNOSUPPORT :: _Platform_Error.ESOCKTNOSUPPORT
 ENOTSUP         :: _Platform_Error.ENOTSUP
-EOPNOTSUPP 	:: _Platform_Error.EOPNOTSUPP
+EOPNOTSUPP 	    :: _Platform_Error.EOPNOTSUPP
 EPFNOSUPPORT    :: _Platform_Error.EPFNOSUPPORT
 EAFNOSUPPORT    :: _Platform_Error.EAFNOSUPPORT
 EADDRINUSE      :: _Platform_Error.EADDRINUSE
@@ -1026,7 +1026,7 @@ absolute_path_from_handle :: proc(fd: Handle) -> (path: string, err: Error) {
 }
 
 @(require_results)
-absolute_path_from_relative :: proc(rel: string) -> (path: string, err: Error) {
+absolute_path_from_relative :: proc(rel: string, allocator := context.allocator) -> (path: string, err: Error) {
 	rel := rel
 	if rel == "" {
 		rel = "."
@@ -1041,9 +1041,7 @@ absolute_path_from_relative :: proc(rel: string) -> (path: string, err: Error) {
 	}
 	defer _unix_free(rawptr(path_ptr))
 
-	path = strings.clone(string(path_ptr))
-
-	return path, nil
+	return strings.clone(string(path_ptr), allocator)
 }
 
 access :: proc(path: string, mask: int) -> bool {
@@ -1095,7 +1093,8 @@ unset_env :: proc(key: string) -> Error {
 }
 
 @(require_results)
-get_current_directory :: proc() -> string {
+get_current_directory :: proc(allocator := context.allocator) -> string {
+	context.allocator = allocator
 	page_size := get_page_size() // NOTE(tetra): See note in os_linux.odin/get_current_directory.
 	buf := make([dynamic]u8, page_size)
 	for {

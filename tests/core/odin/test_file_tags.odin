@@ -34,8 +34,8 @@ package main
 			},
 		}, {// [2]
 			src = `
-//+build linux, darwin, freebsd, openbsd, netbsd, haiku
-//+build arm32, arm64
+#+build linux, darwin, freebsd, openbsd, netbsd, haiku
+#+build arm32, arm64
 package main
 			`,
 			tags = {
@@ -57,10 +57,10 @@ package main
 			},
 		}, {// [3]
 			src = `
-// +private
-//+lazy
-//	+no-instrumentation
-//+ignore
+#+private
+#+lazy
+#+no-instrumentation
+#+ignore
 // some other comment
 package main
 			`,
@@ -75,8 +75,8 @@ package main
 			},
 		}, {// [4]
 			src = `
-//+build-project-name foo !bar, baz
-//+build js wasm32, js wasm64p32
+#+build-project-name foo !bar, baz
+#+build js wasm32, js wasm64p32
 package main
 			`,
 			tags = {
@@ -95,6 +95,22 @@ package main
 				{{.JS, .wasm32, "foo"}, true},
 				{{.JS, .wasm64p32, "baz"}, true},
 				{{.JS, .wasm64p32, "bar"}, false},
+			},
+		}, {// [5]
+			src = `
+#+build !freestanding, wasm32, wasm64p32
+package main`,
+			tags = {
+				build = {
+					{os = runtime.ALL_ODIN_OS_TYPES - {.Freestanding}, arch = runtime.ALL_ODIN_ARCH_TYPES},
+					{os = runtime.ALL_ODIN_OS_TYPES, arch = {.wasm32}},
+					{os = runtime.ALL_ODIN_OS_TYPES, arch = {.wasm64p32}},
+				},
+			},
+			matching_targets = {
+				{{.Freestanding, .wasm32, ""}, true},
+				{{.Freestanding, .wasm64p32, ""}, true},
+				{{.Freestanding, .arm64, ""}, false},
 			},
 		},
 	}

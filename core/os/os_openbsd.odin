@@ -758,7 +758,7 @@ absolute_path_from_handle :: proc(fd: Handle) -> (string, Error) {
 }
 
 @(require_results)
-absolute_path_from_relative :: proc(rel: string) -> (path: string, err: Error) {
+absolute_path_from_relative :: proc(rel: string, allocator := context.allocator) -> (path: string, err: Error) {
 	rel := rel
 	if rel == "" {
 		rel = "."
@@ -773,9 +773,7 @@ absolute_path_from_relative :: proc(rel: string) -> (path: string, err: Error) {
 	}
 	defer _unix_free(rawptr(path_ptr))
 
-	path = strings.clone(string(path_ptr))
-
-	return path, nil
+	return strings.clone(string(path_ptr), allocator)
 }
 
 access :: proc(path: string, mask: int) -> (bool, Error) {
@@ -806,7 +804,8 @@ get_env :: proc(key: string, allocator := context.allocator) -> (value: string) 
 }
 
 @(require_results)
-get_current_directory :: proc() -> string {
+get_current_directory :: proc(allocator := context.allocator) -> string {
+	context.allocator = allocator
 	buf := make([dynamic]u8, MAX_PATH)
 	for {
 		cwd := _unix_getcwd(cstring(raw_data(buf)), c.size_t(len(buf)))

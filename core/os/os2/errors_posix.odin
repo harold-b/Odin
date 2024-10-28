@@ -1,5 +1,5 @@
-//+private
-//+build darwin, netbsd, freebsd, openbsd
+#+private
+#+build darwin, netbsd, freebsd, openbsd
 package os2
 
 import "core:sys/posix"
@@ -26,6 +26,8 @@ _get_platform_error :: proc() -> Error {
 		return .Invalid_File
 	case .ENOMEM:
 		return .Out_Of_Memory
+	case .ENOSYS:
+		return .Unsupported
 	case:
 		return Platform_Error(errno)
 	}

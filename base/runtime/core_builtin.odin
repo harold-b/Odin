@@ -6,6 +6,39 @@ import "base:intrinsics"
 Maybe :: union($T: typeid) {T}
 
 
+/*
+Recovers the containing/parent struct from a pointer to one of its fields.
+Works by "walking back" to the struct's starting address using the offset between the field and the struct.
+
+Inputs:
+- ptr: Pointer to the field of a container struct
+- T: The type of the container struct
+- field_name: The name of the field in the `T` struct
+
+Returns:
+- A pointer to the container struct based on a pointer to a field in it
+
+Example:
+	package container_of
+	import "base:runtime"
+
+	Node :: struct {
+		value: int,
+		prev:  ^Node,
+		next:  ^Node,
+	}
+
+	main :: proc() {
+		node: Node
+		field_ptr := &node.next
+		container_struct_ptr: ^Node = runtime.container_of(field_ptr, Node, "next")
+		assert(container_struct_ptr == &node)
+		assert(uintptr(field_ptr) - uintptr(container_struct_ptr) == size_of(node.value) + size_of(node.prev))
+	}
+
+Output:
+	^Node
+*/
 @(builtin, require_results)
 container_of :: #force_inline proc "contextless" (ptr: $P/^$Field_Type, $T: typeid, $field_name: string) -> ^T
 	where intrinsics.type_has_field(T, field_name),
@@ -350,12 +383,23 @@ _make_dynamic_array_len_cap :: proc(array: ^Raw_Dynamic_Array, size_of_elem, ali
 	return
 }
 
-// `make_map` allocates and initializes a map. Like `new`, the first argument is a type, not a value.
+// `make_map` initializes a map with an allocator. Like `new`, the first argument is a type, not a value.
 // Unlike `new`, `make`'s return value is the same as the type of its argument, not a pointer to it.
 //
 // Note: Prefer using the procedure group `make`.
 @(builtin, require_results)
-make_map :: proc($T: typeid/map[$K]$E, #any_int capacity: int = 1<<MAP_MIN_LOG2_CAPACITY, allocator := context.allocator, loc := #caller_location) -> (m: T, err: Allocator_Error) #optional_allocator_error {
+make_map :: proc($T: typeid/map[$K]$E, allocator := context.allocator) -> (m: T) {
+	m.allocator = allocator
+	return m
+}
+
+// `make_map_cap` initializes a map with an allocator and allocates space using `capacity`.
+// Like `new`, the first argument is a type, not a value.
+// Unlike `new`, `make`'s return value is the same as the type of its argument, not a pointer to it.
+//
+// Note: Prefer using the procedure group `make`.
+@(builtin, require_results)
+make_map_cap :: proc($T: typeid/map[$K]$E, #any_int capacity: int = 1<<MAP_MIN_LOG2_CAPACITY, allocator := context.allocator, loc := #caller_location) -> (m: T, err: Allocator_Error) #optional_allocator_error {
 	make_map_expr_error_loc(loc, capacity)
 	context.allocator = allocator
 
@@ -392,6 +436,7 @@ make :: proc{
 	make_dynamic_array_len,
 	make_dynamic_array_len_cap,
 	make_map,
+	make_map_cap,
 	make_multi_pointer,
 
 	make_soa_slice,
@@ -913,7 +958,7 @@ card :: proc "contextless" (s: $S/bit_set[$E; $U]) -> int {
 
 @builtin
 @(disabled=ODIN_DISABLE_ASSERT)
-assert :: proc(condition: bool, message := "", loc := #caller_location) {
+assert :: proc(condition: bool, message := #caller_expression(condition), loc := #caller_location) {
 	if !condition {
 		// NOTE(bill): This is wrapped in a procedure call
 		// to improve performance to make the CPU not
@@ -952,7 +997,7 @@ unimplemented :: proc(message := "", loc := #caller_location) -> ! {
 
 @builtin
 @(disabled=ODIN_DISABLE_ASSERT)
-assert_contextless :: proc "contextless" (condition: bool, message := "", loc := #caller_location) {
+assert_contextless :: proc "contextless" (condition: bool, message := #caller_expression(condition), loc := #caller_location) {
 	if !condition {
 		// NOTE(bill): This is wrapped in a procedure call
 		// to improve performance to make the CPU not

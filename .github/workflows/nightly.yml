@@ -38,6 +38,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
+          include-hidden-files: true
           name: windows_artifacts
           path: dist
   build_linux:
@@ -75,6 +76,10 @@ jobs:
           cp -r examples $FILE
           # Creating a tarball so executable permissions are retained, see https://github.com/actions/upload-artifact/issues/38
           tar -czvf dist.tar.gz $FILE
+      - name: Odin run
+        run: |
+          FILE="odin-linux-amd64-nightly+$(date -I)"
+          $FILE/odin run examples/demo
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -109,7 +114,9 @@ jobs:
           # Creating a tarball so executable permissions are retained, see https://github.com/actions/upload-artifact/issues/38
           tar -czvf dist.tar.gz $FILE
       - name: Odin run
-        run: ./dist/odin run examples/demo
+        run: |
+          FILE="odin-macos-amd64-nightly+$(date -I)"
+          $FILE/odin run examples/demo
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -144,7 +151,9 @@ jobs:
           # Creating a tarball so executable permissions are retained, see https://github.com/actions/upload-artifact/issues/38
           tar -czvf dist.tar.gz $FILE
       - name: Odin run
-        run: ./dist/odin run examples/demo
+        run: |
+          FILE="odin-macos-arm64-nightly+$(date -I)"
+          $FILE/odin run examples/demo
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -155,7 +164,7 @@ jobs:
     needs: [build_windows, build_macos, build_macos_arm, build_linux]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v2
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.8.x'
 
@@ -173,21 +182,29 @@ jobs:
         uses: actions/download-artifact@v4.1.7
         with:
           name: windows_artifacts
+          path: windows_artifacts
 
       - name: Download Ubuntu artifacts
         uses: actions/download-artifact@v4.1.7
         with:
           name: linux_artifacts
+          path: linux_artifacts
 
       - name: Download macOS artifacts
         uses: actions/download-artifact@v4.1.7
         with:
           name: macos_artifacts
+          path: macos_artifacts
 
       - name: Download macOS arm artifacts
         uses: actions/download-artifact@v4.1.7
         with:
           name: macos_arm_artifacts
+          path: macos_arm_artifacts
+
+      - name: Debug
+        run: |
+          tree -L 2
 
       - name: Create archives and upload
         shell: bash
@@ -197,6 +214,7 @@ jobs:
           BUCKET: ${{ secrets.B2_BUCKET }}
           DAYS_TO_KEEP: ${{ secrets.B2_DAYS_TO_KEEP }}
         run: |
+          file linux_artifacts/dist.tar.gz
           python3 ci/nightly.py artifact windows-amd64 windows_artifacts/
           python3 ci/nightly.py artifact linux-amd64 linux_artifacts/dist.tar.gz
           python3 ci/nightly.py artifact macos-amd64 macos_artifacts/dist.tar.gz

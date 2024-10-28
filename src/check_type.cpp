@@ -673,7 +673,7 @@ gb_internal void check_struct_type(CheckerContext *ctx, Type *struct_type, Ast *
 
 #define ST_ALIGN(_name) if (st->_name != nullptr) {                                                \
 		if (st->is_packed) {                                                               \
-			syntax_error(st->_name, "'#%s' cannot be applied with '#packed'", #_name); \
+			error(st->_name, "'#%s' cannot be applied with '#packed'", #_name); \
 			return;                                                                    \
 		}                                                                                  \
 		i64 align = 1;                                                                     \
@@ -682,12 +682,31 @@ gb_internal void check_struct_type(CheckerContext *ctx, Type *struct_type, Ast *
 		}                                                                                  \
 	}
 
-	ST_ALIGN(field_align);
+	ST_ALIGN(min_field_align);
+	ST_ALIGN(max_field_align);
 	ST_ALIGN(align);
-	if (struct_type->Struct.custom_align < struct_type->Struct.custom_field_align) {
-		warning(st->align, "#align(%lld) is defined to be less than #field_name(%lld)",
-		        cast(long long)struct_type->Struct.custom_align,
-		        cast(long long)struct_type->Struct.custom_field_align);
+	if (struct_type->Struct.custom_align < struct_type->Struct.custom_min_field_align) {
+		error(st->align, "#align(%lld) is defined to be less than #min_field_align(%lld)",
+		      cast(long long)struct_type->Struct.custom_align,
+		      cast(long long)struct_type->Struct.custom_min_field_align);
+	}
+	if (struct_type->Struct.custom_max_field_align != 0 &&
+	    struct_type->Struct.custom_align > struct_type->Struct.custom_max_field_align) {
+		error(st->align, "#align(%lld) is defined to be greater than #max_field_align(%lld)",
+		      cast(long long)struct_type->Struct.custom_align,
+		      cast(long long)struct_type->Struct.custom_max_field_align);
+	}
+	if (struct_type->Struct.custom_max_field_align != 0 &&
+	    struct_type->Struct.custom_min_field_align > struct_type->Struct.custom_max_field_align) {
+		error(st->align, "#min_field_align(%lld) is defined to be greater than #max_field_align(%lld)",
+		      cast(long long)struct_type->Struct.custom_min_field_align,
+		      cast(long long)struct_type->Struct.custom_max_field_align);
+
+		i64 a = gb_min(struct_type->Struct.custom_min_field_align, struct_type->Struct.custom_max_field_align);
+		i64 b = gb_max(struct_type->Struct.custom_min_field_align, struct_type->Struct.custom_max_field_align);
+		// NOTE(bill): sort them to keep code consistent
+		struct_type->Struct.custom_min_field_align = a;
+		struct_type->Struct.custom_max_field_align = b;
 	}
 
 #undef ST_ALIGN
@@ -1605,6 +1624,25 @@ gb_internal bool is_expr_from_a_parameter(CheckerContext *ctx, Ast *expr) {
 	return false;
 }
 
+gb_internal bool is_caller_expression(Ast *expr) {
+	if (expr->kind == Ast_BasicDirective && expr->BasicDirective.name.string == "caller_expression") {
+		return true;
+	}
+
+	Ast *call = unparen_expr(expr);
+	if (call->kind != Ast_CallExpr) {
+		return false;
+	}
+
+	ast_node(ce, CallExpr, call);
+	if (ce->proc->kind != Ast_BasicDirective) {
+		return false;
+	}
+
+	ast_node(bd, BasicDirective, ce->proc);
+	String name = bd->name.string;
+	return name == "caller_expression";
+}
 
 gb_internal ParameterValue handle_parameter_value(CheckerContext *ctx, Type *in_type, Type **out_type_, Ast *expr, bool allow_caller_location) {
 	ParameterValue param_value = {};
@@ -1626,7 +1664,19 @@ gb_internal ParameterValue handle_parameter_value(CheckerContext *ctx, Type *in_
 		if (in_type) {
 			check_assignment(ctx, &o, in_type, str_lit("parameter value"));
 		}
+	} else if (is_caller_expression(expr)) {
+		if (expr->kind != Ast_BasicDirective) {
+			check_builtin_procedure_directive(ctx, &o, expr, t_string);
+		}
 
+		param_value.kind = ParameterValue_Expression;
+		o.type = t_string;
+		o.mode = Addressing_Value;
+		o.expr = expr;
+
+		if (in_type) {
+			check_assignment(ctx, &o, in_type, str_lit("parameter value"));
+		}
 	} else {
 		if (in_type) {
 			check_expr_with_type_hint(ctx, &o, expr, in_type);
@@ -1858,6 +1908,7 @@ gb_internal Type *check_get_params(CheckerContext *ctx, Scope *scope, Ast *_para
 			case ParameterValue_Nil:
 				break;
 			case ParameterValue_Location:
+			case ParameterValue_Expression:
 			case ParameterValue_Value:
 				gbString str = type_to_string(type);
 				error(params[i], "A default value for a parameter must not be a polymorphic constant type, got %s", str);

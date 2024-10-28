@@ -533,18 +533,13 @@ gb_internal u64 check_vet_flags(CheckerContext *c) {
 	    c->curr_proc_decl->proc_lit) {
 		file = c->curr_proc_decl->proc_lit->file();
 	}
-	if (file && file->vet_flags_set) {
-		return file->vet_flags;
-	}
-	return build_context.vet_flags;
+
+	return ast_file_vet_flags(file);
 }
 
 gb_internal u64 check_vet_flags(Ast *node) {
 	AstFile *file = node->file();
-	if (file && file->vet_flags_set) {
-		return file->vet_flags;
-	}
-	return build_context.vet_flags;
+	return ast_file_vet_flags(file);
 }
 
 enum VettedEntityKind {
@@ -681,20 +676,48 @@ gb_internal bool check_vet_unused(Checker *c, Entity *e, VettedEntity *ve) {
 	return false;
 }
 
-gb_internal void check_scope_usage(Checker *c, Scope *scope, u64 vet_flags) {
-	bool vet_unused = (vet_flags & VetFlag_Unused) != 0;
-	bool vet_shadowing = (vet_flags & (VetFlag_Shadowing|VetFlag_Using)) != 0;
-
+gb_internal void check_scope_usage_internal(Checker *c, Scope *scope, u64 vet_flags, bool per_entity) {
+	u64 original_vet_flags = vet_flags;
 	Array<VettedEntity> vetted_entities = {};
 	array_init(&vetted_entities, heap_allocator());
+	defer (array_free(&vetted_entities));
 
 	rw_mutex_shared_lock(&scope->mutex);
 	for (auto const &entry : scope->elements) {
 		Entity *e = entry.value;
 		if (e == nullptr) continue;
+
+		vet_flags = original_vet_flags;
+		if (per_entity) {
+			vet_flags = ast_file_vet_flags(e->file);
+		}
+
+		bool vet_unused = (vet_flags & VetFlag_Unused) != 0;
+		bool vet_shadowing = (vet_flags & (VetFlag_Shadowing|VetFlag_Using)) != 0;
+		bool vet_unused_procedures = (vet_flags & VetFlag_UnusedProcedures) != 0;
+		if (vet_unused_procedures && e->pkg && e->pkg->kind == Package_Runtime) {
+			vet_unused_procedures = false;
+		}
+
 		VettedEntity ve_unused = {};
 		VettedEntity ve_shadowed = {};
-		bool is_unused = vet_unused && check_vet_unused(c, e, &ve_unused);
+		bool is_unused = false;
+		if (vet_unused && check_vet_unused(c, e, &ve_unused)) {
+			is_unused = true;
+		} else if (vet_unused_procedures &&
+		           e->kind == Entity_Procedure) {
+			if (e->flags&EntityFlag_Used) {
+				is_unused = false;
+			} else if (e->flags & EntityFlag_Require) {
+				is_unused = false;
+			} else if (e->pkg && e->pkg->kind == Package_Init && e->token.string == "main") {
+				is_unused = false;
+			} else {
+				is_unused = true;
+				ve_unused.kind = VettedEntity_Unused;
+				ve_unused.entity = e;
+			}
+		}
 		bool is_shadowed = vet_shadowing && check_vet_shadowing(c, e, &ve_shadowed);
 		if (is_unused && is_shadowed) {
 			VettedEntity ve_both = ve_shadowed;
@@ -717,12 +740,17 @@ gb_internal void check_scope_usage(Checker *c, Scope *scope, u64 vet_flags) {
 	}
 	rw_mutex_shared_unlock(&scope->mutex);
 
-	gb_sort(vetted_entities.data, vetted_entities.count, gb_size_of(VettedEntity), vetted_entity_variable_pos_cmp);
+	array_sort(vetted_entities, vetted_entity_variable_pos_cmp);
 
 	for (auto const &ve : vetted_entities) {
 		Entity *e = ve.entity;
 		Entity *other = ve.other;
 		String name = e->token.string;
+
+		vet_flags = original_vet_flags;
+		if (per_entity) {
+			vet_flags = ast_file_vet_flags(e->file);
+		}
 
 		if (ve.kind == VettedEntity_Shadowed_And_Unused) {
 			error(e->token, "'%.*s' declared but not used, possibly shadows declaration at line %d", LIT(name), other->token.pos.line);
@@ -730,6 +758,9 @@ gb_internal void check_scope_usage(Checker *c, Scope *scope, u64 vet_flags) {
 			switch (ve.kind) {
 			case VettedEntity_Unused:
 				if (e->kind == Entity_Variable && (vet_flags & VetFlag_UnusedVariables) != 0) {
+					error(e->token, "'%.*s' declared but not used", LIT(name));
+				}
+				if (e->kind == Entity_Procedure && (vet_flags & VetFlag_UnusedProcedures) != 0) {
 					error(e->token, "'%.*s' declared but not used", LIT(name));
 				}
 				if ((e->kind == Entity_ImportName || e->kind == Entity_LibraryName) && (vet_flags & VetFlag_UnusedImports) != 0) {
@@ -749,7 +780,11 @@ gb_internal void check_scope_usage(Checker *c, Scope *scope, u64 vet_flags) {
 		}
 	}
 
-	array_free(&vetted_entities);
+}
+
+
+gb_internal void check_scope_usage(Checker *c, Scope *scope, u64 vet_flags) {
+	check_scope_usage_internal(c, scope, vet_flags, false);
 
 	for (Scope *child = scope->head_child; child != nullptr; child = child->next) {
 		if (child->flags & (ScopeFlag_Proc|ScopeFlag_Type|ScopeFlag_File)) {
@@ -6174,7 +6209,7 @@ gb_internal void check_deferred_procedures(Checker *c) {
 				}
 				if ((src_params == nullptr && dst_params != nullptr) ||
 				    (src_params != nullptr && dst_params == nullptr)) {
-					error(src->token, "Deferred procedure '%.*s' parameters do not match the inputs of initial procedure '%.*s'", LIT(src->token.string), LIT(dst->token.string));
+					error(src->token, "Deferred procedure '%.*s' parameters do not match the inputs of initial procedure '%.*s'", LIT(dst->token.string), LIT(src->token.string));
 					continue;
 				}
 
@@ -6187,8 +6222,8 @@ gb_internal void check_deferred_procedures(Checker *c) {
 					gbString s = type_to_string(src_params);
 					gbString d = type_to_string(dst_params);
 					error(src->token, "Deferred procedure '%.*s' parameters do not match the inputs of initial procedure '%.*s':\n\t(%s) =/= (%s)",
-					      LIT(src->token.string), LIT(dst->token.string),
-					      s, d
+					      LIT(dst->token.string), LIT(src->token.string),
+					      d, s
 					);
 					gb_string_free(d);
 					gb_string_free(s);
@@ -6204,7 +6239,7 @@ gb_internal void check_deferred_procedures(Checker *c) {
 				}
 				if ((src_results == nullptr && dst_params != nullptr) ||
 				    (src_results != nullptr && dst_params == nullptr)) {
-					error(src->token, "Deferred procedure '%.*s' parameters do not match the results of initial procedure '%.*s'", LIT(src->token.string), LIT(dst->token.string));
+					error(src->token, "Deferred procedure '%.*s' parameters do not match the results of initial procedure '%.*s'", LIT(dst->token.string), LIT(src->token.string));
 					continue;
 				}
 
@@ -6217,8 +6252,8 @@ gb_internal void check_deferred_procedures(Checker *c) {
 					gbString s = type_to_string(src_results);
 					gbString d = type_to_string(dst_params);
 					error(src->token, "Deferred procedure '%.*s' parameters do not match the results of initial procedure '%.*s':\n\t(%s) =/= (%s)",
-					      LIT(src->token.string), LIT(dst->token.string),
-					      s, d
+					      LIT(dst->token.string), LIT(src->token.string),
+					      d, s
 					);
 					gb_string_free(d);
 					gb_string_free(s);
@@ -6270,8 +6305,8 @@ gb_internal void check_deferred_procedures(Checker *c) {
 					gbString s = type_to_string(tsrc);
 					gbString d = type_to_string(dst_params);
 					error(src->token, "Deferred procedure '%.*s' parameters do not match the results of initial procedure '%.*s':\n\t(%s) =/= (%s)",
-					      LIT(src->token.string), LIT(dst->token.string),
-					      s, d
+					      LIT(dst->token.string), LIT(src->token.string),
+					      d, s
 					);
 					gb_string_free(d);
 					gb_string_free(s);
@@ -6497,11 +6532,12 @@ gb_internal void check_parsed_files(Checker *c) {
 	TIME_SECTION("check scope usage");
 	for (auto const &entry : c->info.files) {
 		AstFile *f = entry.value;
-		u64 vet_flags = build_context.vet_flags;
-		if (f->vet_flags_set) {
-			vet_flags = f->vet_flags;
-		}
+		u64 vet_flags = ast_file_vet_flags(f);
 		check_scope_usage(c, f->scope, vet_flags);
+	}
+	for (auto const &entry : c->info.packages) {
+		AstPackage *pkg = entry.value;
+		check_scope_usage_internal(c, pkg->scope, 0, true);
 	}
 
 	TIME_SECTION("add basic type information");

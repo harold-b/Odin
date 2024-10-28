@@ -1,5 +1,5 @@
+#+build darwin
 package net
-// +build darwin
 
 /*
 	Package net implements cross-platform Berkeley Sockets, DNS resolution and associated procedures.
@@ -22,6 +22,7 @@ package net
 
 import "core:c"
 import "core:os"
+import "core:sys/posix"
 import "core:time"
 
 Socket_Option :: enum c.int {
@@ -87,8 +88,8 @@ _dial_tcp_from_endpoint :: proc(endpoint: Endpoint, options := default_tcp_optio
 	sockaddr := _endpoint_to_sockaddr(endpoint)
 	res := os.connect(os.Socket(skt), (^os.SOCKADDR)(&sockaddr), i32(sockaddr.len))
 	if res != nil {
-		err = Dial_Error(os.is_platform_error(res) or_else -1)
-		return
+		close(skt)
+		return {}, Dial_Error(os.is_platform_error(res) or_else -1)
 	}
 
 	return
@@ -119,6 +120,7 @@ _listen_tcp :: proc(interface_endpoint: Endpoint, backlog := 1000) -> (skt: TCP_
 	family := family_from_endpoint(interface_endpoint)
 	sock := create_socket(family, .TCP) or_return
 	skt = sock.(TCP_Socket)
+	defer if err != nil { close(skt) }
 
 	// NOTE(tetra): This is so that if we crash while the socket is open, we can
 	// bypass the cooldown period, and allow the next run of the program to
@@ -135,6 +137,19 @@ _listen_tcp :: proc(interface_endpoint: Endpoint, backlog := 1000) -> (skt: TCP_
 		return
 	}
 
+	return
+}
+
+@(private)
+_bound_endpoint :: proc(sock: Any_Socket) -> (ep: Endpoint, err: Network_Error) {
+	addr: posix.sockaddr_storage
+	addr_len := posix.socklen_t(size_of(addr))
+	res := posix.getsockname(posix.FD(any_socket_to_socket(sock)), (^posix.sockaddr)(&addr), &addr_len)
+	if res != .OK {
+		err = Listen_Error(posix.errno())
+		return
+	}
+	ep = _sockaddr_to_endpoint((^os.SOCKADDR_STORAGE_LH)(&addr))
 	return
 }
 

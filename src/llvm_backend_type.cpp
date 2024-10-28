@@ -43,6 +43,8 @@ gb_internal u64 lb_typeid_kind(lbModule *m, Type *type, u64 id=0) {
 		if (flags & BasicFlag_Pointer)  kind = Typeid_Pointer;
 		if (flags & BasicFlag_String)   kind = Typeid_String;
 		if (flags & BasicFlag_Rune)     kind = Typeid_Rune;
+
+		if (bt->Basic.kind == Basic_typeid) kind = Typeid_Type_Id;
 	} break;
 	case Type_Pointer:         kind = Typeid_Pointer;          break;
 	case Type_MultiPointer:    kind = Typeid_Multi_Pointer;    break;
@@ -826,7 +828,7 @@ gb_internal void lb_setup_type_info_data_giant_array(lbModule *m, i64 global_typ
 
 
 				if (t->Struct.soa_kind != StructSoa_None) {
-					Type *kind_type = get_struct_field_type(tag_type, 10);
+					Type *kind_type = get_struct_field_type(tag_type, 7);
 
 					lbValue soa_kind = lb_const_value(m, kind_type, exact_value_i64(t->Struct.soa_kind));
 					LLVMValueRef soa_type = get_type_info_ptr(m, t->Struct.soa_elem);

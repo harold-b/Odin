@@ -2,7 +2,7 @@ import os
 import sys
 from zipfile  import ZipFile, ZIP_DEFLATED
 from b2sdk.v2 import InMemoryAccountInfo, B2Api
-from datetime import datetime, UTC
+from datetime import datetime, timezone
 import json
 
 UPLOAD_FOLDER = "nightly/"
@@ -32,7 +32,7 @@ def remove_prefix(text: str, prefix: str) -> str:
 	return text[text.startswith(prefix) and len(prefix):]
 
 def create_and_upload_artifact_zip(platform: str, artifact: str) -> int:
-	now = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+	now = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
 
 	source_archive: str
 	destination_name = f'odin-{platform}-nightly+{now.strftime("%Y-%m-%d")}'
@@ -52,9 +52,9 @@ def create_and_upload_artifact_zip(platform: str, artifact: str) -> int:
 					zip_path  = os.path.join("dist", os.path.relpath(file_path, artifact))
 					z.write(file_path, zip_path)
 
-		if not os.path.exists(source_archive):
-			print(f"Error: Newly created ZIP archive {source_archive} not found.")
-			return 1
+	if not os.path.exists(source_archive):
+		print(f"Error: archive {source_archive} not found.")
+		return 1
 
 	print("Uploading {} to {}".format(source_archive, UPLOAD_FOLDER + destination_name))
 	bucket = get_bucket()
@@ -70,8 +70,8 @@ def prune_artifacts():
 	bucket = get_bucket()
 	for file, _ in bucket.ls(UPLOAD_FOLDER, latest_only=False):
 		# Timestamp is in milliseconds
-		date  = datetime.fromtimestamp(file.upload_timestamp / 1_000.0).replace(hour=0, minute=0, second=0, microsecond=0)
-		now   = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+		date  = datetime.fromtimestamp(file.upload_timestamp / 1_000.0, tz=timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+		now   = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
 		delta = now - date
 
 		if delta.days > int(days_to_keep):
@@ -105,7 +105,7 @@ def update_nightly_json():
 			'sizeInBytes': size,
 		})
 
-	now = datetime.now(UTC).isoformat()
+	now = datetime.now(timezone.utc).isoformat()
 
 	nightly = json.dumps({
 		'last_updated' : now,

@@ -1,4 +1,4 @@
-// +build windows
+#+build windows
 package sys_windows
 
 foreign import kernel32 "system:Kernel32.lib"
@@ -381,6 +381,14 @@ foreign kernel32 {
 		nDefaultTimeOut: DWORD,
 		lpSecurityAttributes: LPSECURITY_ATTRIBUTES,
 	) -> HANDLE ---
+	PeekNamedPipe :: proc(
+		hNamedPipe: HANDLE,
+		lpBuffer: rawptr,
+		nBufferSize: u32,
+		lpBytesRead: ^u32,
+		lpTotalBytesAvail: ^u32,
+		lpBytesLeftThisMessage: ^u32,
+	) -> BOOL ---
 	CancelIo :: proc(handle: HANDLE) -> BOOL ---
 	GetOverlappedResult :: proc(
 		hFile: HANDLE,

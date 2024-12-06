@@ -160,7 +160,7 @@ run_demo() {
 
 if [ $# -eq 0 ]; then
 	build_odin debug
-	run_demo
+	# run_demo
 
 	: ${PROGRAM:=$0}
 	printf "\nDebug compiler built. Note: run \"$PROGRAM release\" or \"$PROGRAM release-native\" if you want a faster, release mode compiler.\n"

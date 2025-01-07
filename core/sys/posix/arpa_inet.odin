@@ -26,7 +26,7 @@ foreign lib {
 	// NOTE: returns a static string overwritten by further calls.
 	//
 	// [[ More; https://pubs.opengroup.org/onlinepubs/9699919799/functions/inet_ntoa.html ]]
-	inet_ntoa :: proc(in_addr) -> cstring ---
+	// inet_ntoa :: proc(_in: in_addr) -> cstring ---
 
 	// Convert a numeric address into a text string suitable for presentation.
 	//
@@ -47,7 +47,6 @@ foreign lib {
 		af:   AF,        // INET or INET6
 		src:  cstring,
 		dst:  rawptr,    // either ^in_addr or ^in_addr6
-		size: socklen_t, // size_of(dst^)
 	) -> pton_result ---
 }
 

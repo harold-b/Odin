@@ -15,7 +15,7 @@ PTHREAD_ONCE_SIZE      :: 8
 PTHREAD_RWLOCK_SIZE    :: 192
 PTHREAD_RWLOCKATTR_SIZE :: 16
 
-pthread_t :: distinct u64
+pthread_t :: distinct rawptr
 
 pthread_attr_t :: struct {
 	sig: c.long,

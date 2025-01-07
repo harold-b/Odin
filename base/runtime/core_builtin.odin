@@ -388,7 +388,7 @@ _make_dynamic_array_len_cap :: proc(array: ^Raw_Dynamic_Array, size_of_elem, ali
 //
 // Note: Prefer using the procedure group `make`.
 @(builtin, require_results)
-make_map :: proc($T: typeid/map[$K]$E, allocator := context.allocator) -> (m: T) {
+make_map :: proc($T: typeid/map[$K]$E, allocator := context.allocator, loc := #caller_location) -> (m: T) {
 	m.allocator = allocator
 	return m
 }
@@ -399,7 +399,7 @@ make_map :: proc($T: typeid/map[$K]$E, allocator := context.allocator) -> (m: T)
 //
 // Note: Prefer using the procedure group `make`.
 @(builtin, require_results)
-make_map_cap :: proc($T: typeid/map[$K]$E, #any_int capacity: int = 1<<MAP_MIN_LOG2_CAPACITY, allocator := context.allocator, loc := #caller_location) -> (m: T, err: Allocator_Error) #optional_allocator_error {
+make_map_cap :: proc($T: typeid/map[$K]$E, #any_int capacity: int, allocator := context.allocator, loc := #caller_location) -> (m: T, err: Allocator_Error) #optional_allocator_error {
 	make_map_expr_error_loc(loc, capacity)
 	context.allocator = allocator
 
@@ -826,10 +826,12 @@ _resize_dynamic_array :: #force_inline proc(a: ^Raw_Dynamic_Array, size_of_elem,
 		return nil
 	}
 
+	if should_zero && a.len < length {
+		num_reused := min(a.cap, length) - a.len
+		intrinsics.mem_zero(([^]byte)(a.data)[a.len*size_of_elem:], num_reused*size_of_elem)
+	}
+
 	if length <= a.cap {
-		if should_zero && a.len < length {
-			intrinsics.mem_zero(([^]byte)(a.data)[a.len*size_of_elem:], (length-a.len)*size_of_elem)
-		}
 		a.len = max(length, 0)
 		return nil
 	}
@@ -936,22 +938,36 @@ map_upsert :: proc(m: ^$T/map[$K]$V, key: K, value: V, loc := #caller_location) 
 	return
 }
 
+/*
+Retrieves a pointer to the key and value for a possibly just inserted entry into the map.
+
+If the `key` was not in the map `m`, an entry is inserted with the zero value and `just_inserted` will be `true`.
+Otherwise the existing entry is left untouched and pointers to its key and value are returned.
+
+If the map has to grow in order to insert the entry and the allocation fails, `err` is set and returned.
+
+If `err` is `nil`, `key_ptr` and `value_ptr` are valid pointers and will not be `nil`.
+
+WARN: User modification of the key pointed at by `key_ptr` should only be done if the new key is equal to (in hash) the old key.
+If that is not the case you will corrupt the map.
+*/
+@(builtin, require_results)
+map_entry :: proc(m: ^$T/map[$K]$V, key: K, loc := #caller_location) -> (key_ptr: ^K, value_ptr: ^V, just_inserted: bool, err: Allocator_Error) {
+	key := key
+	zero: V
+
+	_key_ptr, _value_ptr: rawptr
+	_key_ptr, _value_ptr, just_inserted, err = __dynamic_map_entry((^Raw_Map)(m), map_info(T), &key, &zero, loc)
+
+	key_ptr   = (^K)(_key_ptr)
+	value_ptr = (^V)(_value_ptr)
+	return
+}
+
 
 @builtin
 card :: proc "contextless" (s: $S/bit_set[$E; $U]) -> int {
-	when size_of(S) == 1 {
-		return int(intrinsics.count_ones(transmute(u8)s))
-	} else when size_of(S) == 2 {
-		return int(intrinsics.count_ones(transmute(u16)s))
-	} else when size_of(S) == 4 {
-		return int(intrinsics.count_ones(transmute(u32)s))
-	} else when size_of(S) == 8 {
-		return int(intrinsics.count_ones(transmute(u64)s))
-	} else when size_of(S) == 16 {
-		return int(intrinsics.count_ones(transmute(u128)s))
-	} else {
-		#panic("Unhandled card bit_set size")
-	}
+	return int(intrinsics.count_ones(transmute(intrinsics.type_bit_set_underlying_type(S))s))
 }
 
 
@@ -971,6 +987,24 @@ assert :: proc(condition: bool, message := #caller_expression(condition), loc :=
 				p = default_assertion_failure_proc
 			}
 			p("runtime assertion", message, loc)
+		}
+		internal(message, loc)
+	}
+}
+
+// Evaluates the condition and aborts the program iff the condition is
+// false.  This routine ignores `ODIN_DISABLE_ASSERT`, and will always
+// execute.
+@builtin
+ensure :: proc(condition: bool, message := #caller_expression(condition), loc := #caller_location) {
+	if !condition {
+		@(cold)
+		internal :: proc(message: string, loc: Source_Code_Location) {
+			p := context.assertion_failure_proc
+			if p == nil {
+				p = default_assertion_failure_proc
+			}
+			p("unsatisfied ensure", message, loc)
 		}
 		internal(message, loc)
 	}
@@ -1006,6 +1040,17 @@ assert_contextless :: proc "contextless" (condition: bool, message := #caller_ex
 		@(cold)
 		internal :: proc "contextless" (message: string, loc: Source_Code_Location) {
 			default_assertion_contextless_failure_proc("runtime assertion", message, loc)
+		}
+		internal(message, loc)
+	}
+}
+
+@builtin
+ensure_contextless :: proc "contextless" (condition: bool, message := #caller_expression(condition), loc := #caller_location) {
+	if !condition {
+		@(cold)
+		internal :: proc "contextless" (message: string, loc: Source_Code_Location) {
+			default_assertion_contextless_failure_proc("unsatisfied ensure", message, loc)
 		}
 		internal(message, loc)
 	}

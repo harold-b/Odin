@@ -990,13 +990,13 @@ gb_internal void check_foreign_procedure(CheckerContext *ctx, Entity *e, DeclInf
 		Type *other_type = base_type(f->type);
 		if (is_type_proc(this_type) && is_type_proc(other_type)) {
 			if (!are_signatures_similar_enough(this_type, other_type)) {
-				error(d->proc_lit,
+				warning(d->proc_lit,
 				      "Redeclaration of foreign procedure '%.*s' with different type signatures\n"
 				      "\tat %s",
 				      LIT(name), token_pos_to_string(pos));
 			}
 		} else if (!signature_parameter_similar_enough(this_type, other_type)) {
-			error(d->proc_lit,
+			warning(d->proc_lit,
 			      "Foreign entity '%.*s' previously declared elsewhere with a different type\n"
 			      "\tat %s",
 			      LIT(name), token_pos_to_string(pos));

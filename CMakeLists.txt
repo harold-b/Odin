@@ -20,7 +20,7 @@ find_package(Threads REQUIRED)
 add_executable(odin src/main.cpp src/libtommath.cpp)
 
 target_include_directories(odin PRIVATE
-  src
+  ${CMAKE_SOURCE_DIR}/src
   /opt/homebrew/Cellar/llvm@17/17.0.6/include
 )
 
@@ -76,9 +76,3 @@ target_link_libraries(odin PRIVATE
     LLVM
   >
 )
-
-
-# Copy libLLVM*.so into current directory for linking
-# NOTE: This is needed by the Linux release pipeline!
-# cp $(readlink -f $($LLVM_CONFIG --libfiles)) ./
-# LDFLAGS="$LDFLAGS -Wl,-rpath=\$ORIGIN"

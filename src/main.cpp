@@ -3116,6 +3116,47 @@ gb_internal void init_terminal(void) {
 	}
 }
 
+gb_internal void dump_declarations(Checker* c) {
+
+	// String lit
+	String package_name = str_lit("main");
+
+	for_array(i, c->info.all_procedures) {
+		ProcInfo* proc = c->info.all_procedures[i];
+		Entity* e = proc->decl->entity;
+
+		if( str_ne(package_name, e->pkg->name) ) {
+			continue;
+		}
+
+
+		for_array(j, e->decl_info->attributes ) {
+			Ast* ast = e->decl_info->attributes[j];
+			auto& attr = ast->Attribute;
+			
+			// if( attr.token.string == str_lit("@private") ) {
+			// 	goto NEXT;
+			// 	break;
+			// }
+			// attr->Attribute.elems.count
+		}
+
+		{
+			String entity_name = proc->decl->entity->token.string;
+			const char* name = alloc_cstring(temporary_allocator(), entity_name);
+
+			gb_printf("Proc: %s :: proc()\n", name);
+
+					// lbModule *other_module = lb_module_of_entity(m->gen, entity);
+			// String link_name = {};
+			// 		link_name = lb_get_entity_name(other_module, entity);
+			// auto name = proc->decl->entity->TypeName;
+		}
+		NEXT:;
+	}
+	// 	Defineable *def = &c->info.defineables[i];
+}
+
 int main(int arg_count, char const **arg_ptr) {
 	if (arg_count < 2) {
 		usage(make_string_c(arg_ptr[0]));
@@ -3591,6 +3632,12 @@ int main(int arg_count, char const **arg_ptr) {
 
 		return 0;
 	}
+
+	// Test packages
+	// {
+	// 	dump_declarations(checker);
+	// 	return 0;
+	// }
 
 	if (build_context.cached) {
 		MAIN_TIME_SECTION("check cached build");

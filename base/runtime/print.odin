@@ -262,7 +262,7 @@ print_typeid :: #force_no_inline proc "contextless" (id: typeid) {
 	}
 }
 
-@(optimization_mode="size")
+@(optimization_mode="favor_size")
 print_type :: #force_no_inline proc "contextless" (ti: ^Type_Info) {
 	if ti == nil {
 		print_string("nil")
@@ -401,15 +401,16 @@ print_type :: #force_no_inline proc "contextless" (ti: ^Type_Info) {
 		}
 
 		print_string("struct ")
-		if info.is_packed    { print_string("#packed ") }
-		if info.is_raw_union { print_string("#raw_union ") }
-		if info.custom_align {
+		if .packed    in info.flags { print_string("#packed ") }
+		if .raw_union in info.flags { print_string("#raw_union ") }
+		if .no_copy   in info.flags { print_string("#no_copy ") }
+		if .align in info.flags {
 			print_string("#align(")
 			print_u64(u64(ti.align))
 			print_string(") ")
 		}
 		print_byte('{')
-		for name, i in info.names {
+		for name, i in info.names[:info.field_count] {
 			if i > 0 { print_string(", ") }
 			print_string(name)
 			print_string(": ")
@@ -469,7 +470,7 @@ print_type :: #force_no_inline proc "contextless" (ti: ^Type_Info) {
 		print_string("bit_field ")
 		print_type(info.backing_type)
 		print_string(" {")
-		for name, i in info.names {
+		for name, i in info.names[:info.field_count] {
 			if i > 0 { print_string(", ") }
 			print_string(name)
 			print_string(": ")
@@ -485,18 +486,6 @@ print_type :: #force_no_inline proc "contextless" (ti: ^Type_Info) {
 		print_u64(u64(info.count))
 		print_byte(']')
 		print_type(info.elem)
-
-	case Type_Info_Relative_Pointer:
-		print_string("#relative(")
-		print_type(info.base_integer)
-		print_string(") ")
-		print_type(info.pointer)
-
-	case Type_Info_Relative_Multi_Pointer:
-		print_string("#relative(")
-		print_type(info.base_integer)
-		print_string(") ")
-		print_type(info.pointer)
 		
 	case Type_Info_Matrix:
 		print_string("matrix[")

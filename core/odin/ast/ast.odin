@@ -27,6 +27,8 @@ Proc_Calling_Convention :: union {
 Node_State_Flag :: enum {
 	Bounds_Check,
 	No_Bounds_Check,
+	Type_Assert,
+	No_Type_Assert,
 }
 Node_State_Flags :: distinct bit_set[Node_State_Flag]
 
@@ -67,6 +69,7 @@ File :: struct {
 	fullpath: string,
 	src:      string,
 
+	tags: [dynamic]tokenizer.Token,
 	docs: ^Comment_Group,
 
 	pkg_decl:  ^Package_Decl,
@@ -429,10 +432,13 @@ Range_Stmt :: struct {
 	reverse:   bool,
 }
 
-Inline_Range_Stmt :: struct {
+Inline_Range_Stmt :: Unroll_Range_Stmt
+
+Unroll_Range_Stmt :: struct {
 	using node: Stmt,
 	label:     ^Expr,
-	inline_pos: tokenizer.Pos,
+	unroll_pos: tokenizer.Pos,
+	args:       []^Expr,
 	for_pos:    tokenizer.Pos,
 	val0:       ^Expr,
 	val1:       ^Expr,
@@ -513,6 +519,7 @@ Package_Decl :: struct {
 Import_Decl :: struct {
 	using node: Decl,
 	docs:       ^Comment_Group,
+	attributes:  [dynamic]^Attribute, // dynamic as parsing will add to them lazily
 	is_using:    bool,
 	import_tok:  tokenizer.Token,
 	name:        tokenizer.Token,
@@ -538,7 +545,7 @@ Foreign_Import_Decl :: struct {
 	import_tok:      tokenizer.Token,
 	name:            ^Ident,
 	collection_name: string,
-	fullpaths:       []string,
+	fullpaths:       []^Expr,
 	comment:         ^Comment_Group,
 }
 
@@ -598,6 +605,7 @@ Field_Flag :: enum {
 	Subtype,
 	By_Ptr,
 	No_Broadcast,
+	No_Capture,
 
 	Results,
 	Tags,
@@ -618,6 +626,7 @@ field_flag_strings := [Field_Flag]string{
 	.Subtype            = "#subtype",
 	.By_Ptr             = "#by_ptr",
 	.No_Broadcast       = "#no_broadcast",
+	.No_Capture         = "#no_capture",
 
 	.Results            = "results",
 	.Tags               = "field tag",
@@ -633,6 +642,7 @@ field_hash_flag_strings := []struct{key: string, flag: Field_Flag}{
 	{"subtype",      .Subtype},
 	{"by_ptr",       .By_Ptr},
 	{"no_broadcast", .No_Broadcast},
+	{"no_capture",   .No_Capture},
 }
 
 
@@ -753,7 +763,7 @@ Array_Type :: struct {
 	using node: Expr,
 	open:  tokenizer.Pos,
 	tag:   ^Expr,
-	len:   ^Expr, // Ellipsis node for [?]T arrray types, nil for slice types
+	len:   ^Expr, // Unary_Expr node for [?]T array types, nil for slice types
 	close: tokenizer.Pos,
 	elem:  ^Expr,
 }
@@ -769,17 +779,18 @@ Dynamic_Array_Type :: struct {
 
 Struct_Type :: struct {
 	using node: Expr,
-	tok_pos:       tokenizer.Pos,
-	poly_params:   ^Field_List,
-	align:         ^Expr,
-	field_align:   ^Expr,
-	where_token:   tokenizer.Token,
-	where_clauses: []^Expr,
-	is_packed:     bool,
-	is_raw_union:  bool,
-	is_no_copy:    bool,
-	fields:        ^Field_List,
-	name_count:    int,
+	tok_pos:         tokenizer.Pos,
+	poly_params:     ^Field_List,
+	align:           ^Expr,
+	min_field_align: ^Expr,
+	max_field_align: ^Expr,
+	where_token:     tokenizer.Token,
+	where_clauses:   []^Expr,
+	is_packed:       bool,
+	is_raw_union:    bool,
+	is_no_copy:      bool,
+	fields:          ^Field_List,
+	name_count:      int,
 }
 
 Union_Type_Kind :: enum u8 {
@@ -857,6 +868,7 @@ Bit_Field_Field :: struct {
 	name:       ^Expr,
 	type:       ^Expr,
 	bit_size:   ^Expr,
+	tag:        tokenizer.Token,
 	comments:   ^Comment_Group,
 }
 

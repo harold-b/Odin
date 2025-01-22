@@ -76,9 +76,13 @@ Answers to common questions about Odin.
 
 Documentation for all the official packages part of the [core](https://pkg.odin-lang.org/core/) and [vendor](https://pkg.odin-lang.org/vendor/) library collections.
 
-#### [The Odin Wiki](https://github.com/odin-lang/Odin/wiki)
+#### [Examples](https://github.com/odin-lang/examples)
 
-A wiki maintained by the Odin community.
+Examples on how to write idiomatic Odin code. Shows how to accomplish specific tasks in Odin, as well as how to use packages from `core` and `vendor`.
+
+#### [Odin Documentation](https://odin-lang.org/docs/)
+
+Documentation for the Odin language itself.
 
 #### [Odin Discord](https://discord.gg/sVBPHEv)
 

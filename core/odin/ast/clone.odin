@@ -242,8 +242,9 @@ clone_node :: proc(node: ^Node) -> ^Node {
 			r.vals = clone(r.vals)
 			r.expr = clone(r.expr)
 			r.body = clone(r.body)
-		case ^Inline_Range_Stmt:
+		case ^Unroll_Range_Stmt:
 			r.label = clone(r.label)
+			r.args = clone(r.args)
 			r.val0 = clone(r.val0)
 			r.val1 = clone(r.val1)
 			r.expr = clone(r.expr)
@@ -278,7 +279,9 @@ clone_node :: proc(node: ^Node) -> ^Node {
 			r.foreign_library = clone(r.foreign_library)
 			r.body            = clone(r.body)
 		case ^Foreign_Import_Decl:
+			r.attributes = clone_dynamic_array(r.attributes)
 			r.name = auto_cast clone(r.name)
+			r.fullpaths  = clone_array(r.fullpaths)
 		case ^Proc_Group:
 			r.args = clone(r.args)
 		case ^Attribute:
@@ -314,7 +317,8 @@ clone_node :: proc(node: ^Node) -> ^Node {
 		case ^Struct_Type:
 			r.poly_params = auto_cast clone(r.poly_params)
 			r.align = clone(r.align)
-			r.field_align = clone(r.field_align)
+			r.min_field_align = clone(r.min_field_align)
+			r.max_field_align = clone(r.max_field_align)
 			r.fields = auto_cast clone(r.fields)
 		case ^Union_Type:
 			r.poly_params = auto_cast clone(r.poly_params)

@@ -88,6 +88,13 @@ gb_internal char *alloc_cstring(gbAllocator a, String s) {
 	return c_str;
 }
 
+gb_internal wchar_t *alloc_wstring(gbAllocator a, String16 s) {
+	wchar_t *c_str = gb_alloc_array(a, wchar_t, s.len+1);
+	gb_memmove(c_str, s.text, s.len*2);
+	c_str[s.len] = '\0';
+	return c_str;
+}
+
 
 gb_internal gb_inline bool str_eq_ignore_case(String const &a, String const &b) {
 	if (a.len == b.len) {
@@ -149,6 +156,7 @@ gb_internal isize string_index_byte(String const &s, u8 x) {
 
 gb_internal gb_inline bool str_eq(String const &a, String const &b) {
 	if (a.len != b.len) return false;
+	if (a.len == 0) return true;
 	return memcmp(a.text, b.text, a.len) == 0;
 }
 gb_internal gb_inline bool str_ne(String const &a, String const &b) { return !str_eq(a, b);                }
@@ -329,22 +337,22 @@ gb_internal bool string_contains_char(String const &s, u8 c) {
 }
 
 gb_internal bool string_contains_string(String const &haystack, String const &needle) {
-    if (needle.len == 0) return true;
-    if (needle.len > haystack.len) return false;
+	if (needle.len == 0) return true;
+	if (needle.len > haystack.len) return false;
 
-    for (isize i = 0; i <= haystack.len - needle.len; i++) {
-        bool found = true;
-        for (isize j = 0; j < needle.len; j++) {
-            if (haystack[i + j] != needle[j]) {
-                found = false;
-                break;
-            }
-        }
-        if (found) {
-            return true;
-        }
-    }
-    return false;
+	for (isize i = 0; i <= haystack.len - needle.len; i++) {
+		bool found = true;
+		for (isize j = 0; j < needle.len; j++) {
+			if (haystack[i + j] != needle[j]) {
+				found = false;
+				break;
+			}
+		}
+		if (found) {
+			return true;
+		}
+	}
+	return false;
 }
 
 gb_internal String filename_from_path(String s) {
@@ -404,6 +412,32 @@ gb_internal String concatenate4_strings(gbAllocator a, String const &x, String c
 	return make_string(data, len);
 }
 
+#if defined(GB_SYSTEM_WINDOWS)
+gb_internal String escape_char(gbAllocator a, String s, char cte) {
+	isize buf_len = s.len;
+	isize cte_count = 0;
+	for (isize j = 0; j < s.len; j++) {
+		if (s.text[j] == cte) {
+			cte_count++;
+		}
+	}
+
+	u8 *buf = gb_alloc_array(a, u8, buf_len+cte_count);
+	isize i = 0;
+	for (isize j = 0; j < s.len; j++) {
+		u8 c = s.text[j];
+
+		if (c == cte) {
+			buf[i++] = '\\';
+			buf[i++] = c;
+		} else {
+			buf[i++] = c;
+		}
+	}
+	return make_string(buf, i);
+}
+#endif
+
 gb_internal String string_join_and_quote(gbAllocator a, Array<String> strings) {
 	if (!strings.count) {
 		return make_string(nullptr, 0);
@@ -419,7 +453,11 @@ gb_internal String string_join_and_quote(gbAllocator a, Array<String> strings) {
 		if (i > 0) {
 			s = gb_string_append_fmt(s, " ");
 		}
+#if defined(GB_SYSTEM_WINDOWS)
+		s = gb_string_append_fmt(s, "\"%.*s\" ", LIT(escape_char(a, strings[i], '\\')));
+#else
 		s = gb_string_append_fmt(s, "\"%.*s\" ", LIT(strings[i]));
+#endif
 	}
 
 	return make_string(cast(u8 *) s, gb_string_length(s));
@@ -543,6 +581,40 @@ gb_internal String string16_to_string(gbAllocator a, String16 s) {
 
 
 
+gb_internal String temporary_directory(gbAllocator allocator) {
+#if defined(GB_SYSTEM_WINDOWS)
+	DWORD n = GetTempPathW(0, nullptr);
+	if (n == 0) {
+		return String{0};
+	}
+	DWORD len = gb_max(MAX_PATH, n);
+	wchar_t *b = gb_alloc_array(heap_allocator(), wchar_t, len+1);
+	defer (gb_free(heap_allocator(), b));
+	n = GetTempPathW(len, b);
+	if (n == 3 && b[1] == ':' && b[2] == '\\') {
+
+	} else if (n > 0 && b[n-1] == '\\') {
+		n -= 1;
+	}
+	b[n] = 0;
+	String16 s = make_string16(b, n);
+	return string16_to_string(allocator, s);
+#else
+	char const *tmp_env = gb_get_env("TMPDIR", allocator);
+	if (tmp_env) {
+		return make_string_c(tmp_env);
+	}
+
+#if defined(P_tmpdir)
+	String tmp_macro = make_string_c(P_tmpdir);
+	if (tmp_macro.len != 0) {
+		return copy_string(allocator, tmp_macro);
+	}
+#endif
+
+	return copy_string(allocator, str_lit("/tmp"));
+#endif
+}
 
 
 
@@ -646,12 +718,12 @@ gb_internal bool unquote_char(String s, u8 quote, Rune *rune, bool *multiple_byt
 		Rune r = -1;
 		isize size = utf8_decode(s.text, s.len, &r);
 		*rune = r;
-		*multiple_bytes = true;
-		*tail_string = make_string(s.text+size, s.len-size);
+		if (multiple_bytes) *multiple_bytes = true;
+		if (tail_string) *tail_string = make_string(s.text+size, s.len-size);
 		return true;
 	} else if (s[0] != '\\') {
 		*rune = s[0];
-		*tail_string = make_string(s.text+1, s.len-1);
+		if (tail_string) *tail_string = make_string(s.text+1, s.len-1);
 		return true;
 	}
 
@@ -737,10 +809,10 @@ gb_internal bool unquote_char(String s, u8 quote, Rune *rune, bool *multiple_byt
 			return false;
 		}
 		*rune = r;
-		*multiple_bytes = true;
+		if (multiple_bytes) *multiple_bytes = true;
 	} break;
 	}
-	*tail_string = s;
+	if (tail_string) *tail_string = s;
 	return true;
 }
 

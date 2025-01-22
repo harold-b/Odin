@@ -1,16 +1,37 @@
 #include "parser_pos.cpp"
 
+gb_internal bool in_vet_packages(AstFile *file) {
+	if (file == nullptr) {
+		return true;
+	}
+	if (file->pkg == nullptr) {
+		return true;
+	}
+	if (build_context.vet_packages.entries.count == 0) {
+		return true;
+	}
+	return string_set_exists(&build_context.vet_packages, file->pkg->name);
+}
+
 gb_internal u64 ast_file_vet_flags(AstFile *f) {
 	if (f != nullptr && f->vet_flags_set) {
 		return f->vet_flags;
 	}
-	return build_context.vet_flags;
+
+	bool found = in_vet_packages(f);
+	if (found) {
+		return build_context.vet_flags;
+	}
+	return 0;
 }
 
 gb_internal bool ast_file_vet_style(AstFile *f) {
 	return (ast_file_vet_flags(f) & VetFlag_Style) != 0;
 }
 
+gb_internal bool ast_file_vet_deprecated(AstFile *f) {
+	return (ast_file_vet_flags(f) & VetFlag_Deprecated) != 0;
+}
 
 gb_internal bool file_allow_newline(AstFile *f) {
 	bool is_strict = build_context.strict_style || ast_file_vet_style(f);
@@ -32,28 +53,59 @@ gb_internal gbString get_file_line_as_string(TokenPos const &pos, i32 *offset_) 
 	if (file == nullptr) {
 		return nullptr;
 	}
-	isize offset = pos.offset;
-
 	u8 *start = file->tokenizer.start;
 	u8 *end = file->tokenizer.end;
 	if (start == end) {
 		return nullptr;
 	}
+
+	isize offset = pos.offset;
+	if (pos.line != 0 && offset == 0) {
+		for (i32 i = 1; i < pos.line; i++) {
+			while (start+offset < end) {
+				u8 c = start[offset++];
+				if (c == '\n') {
+					break;
+				}
+			}
+		}
+		for (i32 i = 1; i < pos.column; i++) {
+			u8 *ptr = start+offset;
+			u8 c = *ptr;
+			if (c & 0x80) {
+				offset += utf8_decode(ptr, end-ptr, nullptr);
+			} else {
+				offset++;
+			}
+		}
+	}
+
+
 	isize len = end-start;
 	if (len < offset) {
 		return nullptr;
 	}
-
 	u8 *pos_offset = start+offset;
 
 	u8 *line_start = pos_offset;
 	u8 *line_end  = pos_offset;
+
+	if (offset > 0 && *line_start == '\n') {
+		// Prevent an error token that starts at the boundary of a line that
+		// leads to an empty line from advancing off its line.
+		line_start -= 1;
+	}
 	while (line_start >= start) {
 		if (*line_start == '\n') {
 			line_start += 1;
 			break;
 		}
 		line_start -= 1;
+	}
+	if (line_start == start - 1) {
+		// Prevent an error on the first line from stepping behind the boundary
+		// of the text.
+		line_start += 1;
 	}
 
 	while (line_end < end) {
@@ -67,6 +119,7 @@ gb_internal gbString get_file_line_as_string(TokenPos const &pos, i32 *offset_) 
 
 	if (offset_) *offset_ = cast(i32)(pos_offset - the_line.text);
 
+
 	return gb_string_make_length(heap_allocator(), the_line.text, the_line.len);
 }
 
@@ -77,17 +130,17 @@ gb_internal isize ast_node_size(AstKind kind) {
 
 }
 
-gb_global std::atomic<isize> global_total_node_memory_allocated;
+// gb_global std::atomic<isize> global_total_node_memory_allocated;
 
 // NOTE(bill): And this below is why is I/we need a new language! Discriminated unions are a pain in C/C++
 gb_internal Ast *alloc_ast_node(AstFile *f, AstKind kind) {
 	isize size = ast_node_size(kind);
 
-	Ast *node = cast(Ast *)arena_alloc(&global_thread_local_ast_arena, size, 16);
+	Ast *node = cast(Ast *)arena_alloc(get_arena(ThreadArena_Permanent), size, 16);
 	node->kind = kind;
 	node->file_id = f ? f->id : 0;
 
-	global_total_node_memory_allocated.fetch_add(size);
+	// global_total_node_memory_allocated.fetch_add(size);
 
 	return node;
 }
@@ -295,10 +348,11 @@ gb_internal Ast *clone_ast(Ast *node, AstFile *f) {
 		n->RangeStmt.body  = clone_ast(n->RangeStmt.body, f);
 		break;
 	case Ast_UnrollRangeStmt:
-		n->UnrollRangeStmt.val0  = clone_ast(n->UnrollRangeStmt.val0, f);
-		n->UnrollRangeStmt.val1  = clone_ast(n->UnrollRangeStmt.val1, f);
-		n->UnrollRangeStmt.expr  = clone_ast(n->UnrollRangeStmt.expr, f);
-		n->UnrollRangeStmt.body  = clone_ast(n->UnrollRangeStmt.body, f);
+		n->UnrollRangeStmt.args = clone_ast_array(n->UnrollRangeStmt.args, f);
+		n->UnrollRangeStmt.val0 = clone_ast(n->UnrollRangeStmt.val0, f);
+		n->UnrollRangeStmt.val1 = clone_ast(n->UnrollRangeStmt.val1, f);
+		n->UnrollRangeStmt.expr = clone_ast(n->UnrollRangeStmt.expr, f);
+		n->UnrollRangeStmt.body = clone_ast(n->UnrollRangeStmt.body, f);
 		break;
 	case Ast_CaseClause:
 		n->CaseClause.list  = clone_ast_array(n->CaseClause.list, f);
@@ -395,7 +449,8 @@ gb_internal Ast *clone_ast(Ast *node, AstFile *f) {
 		n->StructType.fields             = clone_ast_array(n->StructType.fields, f);
 		n->StructType.polymorphic_params = clone_ast(n->StructType.polymorphic_params, f);
 		n->StructType.align              = clone_ast(n->StructType.align, f);
-		n->StructType.field_align        = clone_ast(n->StructType.field_align, f);
+		n->StructType.min_field_align    = clone_ast(n->StructType.min_field_align, f);
+		n->StructType.max_field_align    = clone_ast(n->StructType.max_field_align, f);
 		n->StructType.where_clauses      = clone_ast_array(n->StructType.where_clauses, f);
 		break;
 	case Ast_UnionType:
@@ -552,7 +607,7 @@ gb_internal Ast *ast_unary_expr(AstFile *f, Token op, Ast *expr) {
 		syntax_error_with_verbose(expr, "'or_return' within an unary expression not wrapped in parentheses (...)");
 		break;
 	case Ast_OrBranchExpr:
-		syntax_error_with_verbose(expr, "'or_%.*s' within an unary expression not wrapped in parentheses (...)", LIT(expr->OrBranchExpr.token.string));
+		syntax_error_with_verbose(expr, "'%.*s' within an unary expression not wrapped in parentheses (...)", LIT(expr->OrBranchExpr.token.string));
 		break;
 	}
 
@@ -580,7 +635,7 @@ gb_internal Ast *ast_binary_expr(AstFile *f, Token op, Ast *left, Ast *right) {
 		syntax_error_with_verbose(left, "'or_return' within a binary expression not wrapped in parentheses (...)");
 		break;
 	case Ast_OrBranchExpr:
-		syntax_error_with_verbose(left, "'or_%.*s' within a binary expression not wrapped in parentheses (...)", LIT(left->OrBranchExpr.token.string));
+		syntax_error_with_verbose(left, "'%.*s' within a binary expression not wrapped in parentheses (...)", LIT(left->OrBranchExpr.token.string));
 		break;
 	}
 	if (right) switch (right->kind) {
@@ -588,7 +643,7 @@ gb_internal Ast *ast_binary_expr(AstFile *f, Token op, Ast *left, Ast *right) {
 		syntax_error_with_verbose(right, "'or_return' within a binary expression not wrapped in parentheses (...)");
 		break;
 	case Ast_OrBranchExpr:
-		syntax_error_with_verbose(right, "'or_%.*s' within a binary expression not wrapped in parentheses (...)", LIT(right->OrBranchExpr.token.string));
+		syntax_error_with_verbose(right, "'%.*s' within a binary expression not wrapped in parentheses (...)", LIT(right->OrBranchExpr.token.string));
 		break;
 	}
 
@@ -715,7 +770,17 @@ gb_internal ExactValue exact_value_from_token(AstFile *f, Token const &token) {
 	}
 	ExactValue value = exact_value_from_basic_literal(token.kind, s);
 	if (value.kind == ExactValue_Invalid) {
-		syntax_error(token, "Invalid token literal");
+		switch (token.kind) {
+		case Token_Integer:
+			syntax_error(token, "Invalid integer literal");
+			break;
+		case Token_Float:
+			syntax_error(token, "Invalid float literal");
+			break;
+		default:
+			syntax_error(token, "Invalid token literal");
+			break;
+		}
 	}
 	return value;
 }
@@ -742,6 +807,9 @@ gb_internal Ast *ast_basic_directive(AstFile *f, Token token, Token name) {
 	Ast *result = alloc_ast_node(f, Ast_BasicDirective);
 	result->BasicDirective.token = token;
 	result->BasicDirective.name = name;
+	if (string_starts_with(name.string, str_lit("load"))) {
+		f->seen_load_directive_count++;
+	}
 	return result;
 }
 
@@ -970,15 +1038,16 @@ gb_internal Ast *ast_range_stmt(AstFile *f, Token token, Slice<Ast *> vals, Toke
 	return result;
 }
 
-gb_internal Ast *ast_unroll_range_stmt(AstFile *f, Token unroll_token, Token for_token, Ast *val0, Ast *val1, Token in_token, Ast *expr, Ast *body) {
+gb_internal Ast *ast_unroll_range_stmt(AstFile *f, Token unroll_token, Slice<Ast *> args, Token for_token, Ast *val0, Ast *val1, Token in_token, Ast *expr, Ast *body) {
 	Ast *result = alloc_ast_node(f, Ast_UnrollRangeStmt);
 	result->UnrollRangeStmt.unroll_token = unroll_token;
+	result->UnrollRangeStmt.args      = args;
 	result->UnrollRangeStmt.for_token = for_token;
-	result->UnrollRangeStmt.val0 = val0;
-	result->UnrollRangeStmt.val1 = val1;
-	result->UnrollRangeStmt.in_token = in_token;
-	result->UnrollRangeStmt.expr  = expr;
-	result->UnrollRangeStmt.body  = body;
+	result->UnrollRangeStmt.val0      = val0;
+	result->UnrollRangeStmt.val1      = val1;
+	result->UnrollRangeStmt.in_token  = in_token;
+	result->UnrollRangeStmt.expr      = expr;
+	result->UnrollRangeStmt.body      = body;
 	return result;
 }
 
@@ -1151,7 +1220,7 @@ gb_internal Ast *ast_dynamic_array_type(AstFile *f, Token token, Ast *elem) {
 
 gb_internal Ast *ast_struct_type(AstFile *f, Token token, Slice<Ast *> fields, isize field_count,
                      Ast *polymorphic_params, bool is_packed, bool is_raw_union, bool is_no_copy,
-                     Ast *align, Ast *field_align,
+                     Ast *align, Ast *min_field_align, Ast *max_field_align,
                      Token where_token, Array<Ast *> const &where_clauses) {
 	Ast *result = alloc_ast_node(f, Ast_StructType);
 	result->StructType.token              = token;
@@ -1162,7 +1231,8 @@ gb_internal Ast *ast_struct_type(AstFile *f, Token token, Slice<Ast *> fields, i
 	result->StructType.is_raw_union       = is_raw_union;
 	result->StructType.is_no_copy         = is_no_copy;
 	result->StructType.align              = align;
-	result->StructType.field_align        = field_align;
+	result->StructType.min_field_align    = min_field_align;
+	result->StructType.max_field_align    = max_field_align;
 	result->StructType.where_token        = where_token;
 	result->StructType.where_clauses      = slice_from_array(where_clauses);
 	return result;
@@ -1281,14 +1351,16 @@ gb_internal Ast *ast_import_decl(AstFile *f, Token token, Token relpath, Token i
 	return result;
 }
 
-gb_internal Ast *ast_foreign_import_decl(AstFile *f, Token token, Array<Token> filepaths, Token library_name,
-                             CommentGroup *docs, CommentGroup *comment) {
+gb_internal Ast *ast_foreign_import_decl(AstFile *f, Token token, Array<Ast *> filepaths, Token library_name,
+                                         bool multiple_filepaths,
+                                         CommentGroup *docs, CommentGroup *comment) {
 	Ast *result = alloc_ast_node(f, Ast_ForeignImportDecl);
 	result->ForeignImportDecl.token        = token;
 	result->ForeignImportDecl.filepaths    = slice_from_array(filepaths);
 	result->ForeignImportDecl.library_name = library_name;
 	result->ForeignImportDecl.docs         = docs;
 	result->ForeignImportDecl.comment      = comment;
+	result->ForeignImportDecl.multiple_filepaths = multiple_filepaths;
 	result->ForeignImportDecl.attributes.allocator = ast_allocator(f);
 
 	return result;
@@ -1450,7 +1522,7 @@ gb_internal bool skip_possible_newline(AstFile *f) {
 	return false;
 }
 
-gb_internal bool skip_possible_newline_for_literal(AstFile *f) {
+gb_internal bool skip_possible_newline_for_literal(AstFile *f, bool ignore_strict_style=false) {
 	Token curr = f->curr_token;
 	if (token_is_newline(curr)) {
 		Token next = peek_token(f);
@@ -1458,6 +1530,10 @@ gb_internal bool skip_possible_newline_for_literal(AstFile *f) {
 			switch (next.kind) {
 			case Token_OpenBrace:
 			case Token_else:
+				if (build_context.strict_style && !ignore_strict_style) {
+					syntax_error(next, "With '-strict-style' the attached brace style (1TBS) is enforced");
+				}
+				/*fallthrough*/
 			case Token_where:
 				advance_token(f);
 				return true;
@@ -1569,7 +1645,7 @@ gb_internal Token expect_operator(AstFile *f) {
 		             LIT(p));
 	}
 	if (prev.kind == Token_Ellipsis) {
-		syntax_warning(prev, "'..' for ranges has now been deprecated, prefer '..='");
+		syntax_error(prev, "'..' for ranges are not allowed, did you mean '..<' or '..='?");
 		f->tokens[f->curr_token_index].flags |= TokenFlag_Replace;
 	}
 	
@@ -1867,6 +1943,9 @@ gb_internal Array<Ast *> parse_enum_field_list(AstFile *f) {
 	       f->curr_token.kind != Token_EOF) {
 		CommentGroup *docs = f->lead_comment;
 		CommentGroup *comment = nullptr;
+
+		parse_enforce_tabs(f);
+
 		Ast *name = parse_value(f);
 		Ast *value = nullptr;
 		if (f->curr_token.kind == Token_Eq) {
@@ -2086,6 +2165,9 @@ gb_internal bool ast_on_same_line(Token const &x, Ast *yp) {
 gb_internal Ast *parse_force_inlining_operand(AstFile *f, Token token) {
 	Ast *expr = parse_unary_expr(f, false);
 	Ast *e = strip_or_return_expr(expr);
+	if (e == nullptr) {
+		return expr;
+	}
 	if (e->kind != Ast_ProcLit && e->kind != Ast_CallExpr) {
 		syntax_error(expr, "%.*s must be followed by a procedure literal or call, got %.*s", LIT(token.string), LIT(ast_strings[expr->kind]));
 		return ast_bad_expr(f, token, f->curr_token);
@@ -2202,6 +2284,7 @@ gb_internal Array<Ast *> parse_union_variant_list(AstFile *f) {
 	auto variants = array_make<Ast *>(ast_allocator(f));
 	while (f->curr_token.kind != Token_CloseBrace &&
 	       f->curr_token.kind != Token_EOF) {
+		parse_enforce_tabs(f);
 		Ast *type = parse_type(f);
 		if (type->kind != Ast_BadExpr) {
 			array_add(&variants, type);
@@ -2407,6 +2490,7 @@ gb_internal Ast *parse_operand(AstFile *f, bool lhs) {
 				tag = parse_call_expr(f, tag);
 			}
 			Ast *type = parse_type(f);
+			syntax_error(tag, "#relative types have now been removed in favour of \"core:relative\"");
 			return ast_relative_type(f, tag, type);
 		} else if (name.string == "force_inline" ||
 		           name.string == "force_no_inline") {
@@ -2478,7 +2562,7 @@ gb_internal Ast *parse_operand(AstFile *f, bool lhs) {
 			return type;
 		}
 
-		skip_possible_newline_for_literal(f);
+		skip_possible_newline_for_literal(f, where_token.kind == Token_where);
 
 		if (allow_token(f, Token_Uninit)) {
 			if (where_token.kind != Token_Invalid) {
@@ -2678,7 +2762,8 @@ gb_internal Ast *parse_operand(AstFile *f, bool lhs) {
 		bool is_raw_union       = false;
 		bool no_copy            = false;
 		Ast *align              = nullptr;
-		Ast *field_align        = nullptr;
+		Ast *min_field_align    = nullptr;
+		Ast *max_field_align    = nullptr;
 
 		if (allow_token(f, Token_OpenParen)) {
 			isize param_count = 0;
@@ -2716,18 +2801,43 @@ gb_internal Ast *parse_operand(AstFile *f, bool lhs) {
 					gb_string_free(s);
 				}
 			} else if (tag.string == "field_align") {
-				if (field_align) {
+				if (min_field_align) {
 					syntax_error(tag, "Duplicate struct tag '#%.*s'", LIT(tag.string));
 				}
-				field_align = parse_expr(f, true);
-				if (field_align && field_align->kind != Ast_ParenExpr) {
+				syntax_warning(tag, "#field_align has been deprecated in favour of #min_field_align");
+				min_field_align = parse_expr(f, true);
+				if (min_field_align && min_field_align->kind != Ast_ParenExpr) {
 					ERROR_BLOCK();
-					gbString s = expr_to_string(field_align);
+					gbString s = expr_to_string(min_field_align);
 					syntax_warning(tag, "#field_align requires parentheses around the expression");
-					error_line("\tSuggestion: #field_align(%s)", s);
+					error_line("\tSuggestion: #min_field_align(%s)", s);
 					gb_string_free(s);
 				}
-			} else if (tag.string == "raw_union") {
+			} else if (tag.string == "min_field_align") {
+				if (min_field_align) {
+					syntax_error(tag, "Duplicate struct tag '#%.*s'", LIT(tag.string));
+				}
+				min_field_align = parse_expr(f, true);
+				if (min_field_align && min_field_align->kind != Ast_ParenExpr) {
+					ERROR_BLOCK();
+					gbString s = expr_to_string(min_field_align);
+					syntax_warning(tag, "#min_field_align requires parentheses around the expression");
+					error_line("\tSuggestion: #min_field_align(%s)", s);
+					gb_string_free(s);
+				}
+			} else if (tag.string == "max_field_align") {
+				if (max_field_align) {
+					syntax_error(tag, "Duplicate struct tag '#%.*s'", LIT(tag.string));
+				}
+				max_field_align = parse_expr(f, true);
+				if (max_field_align && max_field_align->kind != Ast_ParenExpr) {
+					ERROR_BLOCK();
+					gbString s = expr_to_string(max_field_align);
+					syntax_warning(tag, "#max_field_align requires parentheses around the expression");
+					error_line("\tSuggestion: #max_field_align(%s)", s);
+					gb_string_free(s);
+				}
+			}else if (tag.string == "raw_union") {
 				if (is_raw_union) {
 					syntax_error(tag, "Duplicate struct tag '#%.*s'", LIT(tag.string));
 				}
@@ -2777,7 +2887,7 @@ gb_internal Ast *parse_operand(AstFile *f, bool lhs) {
 
 		parser_check_polymorphic_record_parameters(f, polymorphic_params);
 
-		return ast_struct_type(f, token, decls, name_count, polymorphic_params, is_packed, is_raw_union, no_copy, align, field_align, where_token, where_clauses);
+		return ast_struct_type(f, token, decls, name_count, polymorphic_params, is_packed, is_raw_union, no_copy, align, min_field_align, max_field_align, where_token, where_clauses);
 	} break;
 
 	case Token_union: {
@@ -3081,7 +3191,7 @@ gb_internal Ast *parse_call_expr(AstFile *f, Ast *operand) {
 	Ast *call = ast_call_expr(f, operand, args, open_paren, close_paren, ellipsis);
 
 	Ast *o = unparen_expr(operand);
-	if (o->kind == Ast_SelectorExpr && o->SelectorExpr.token.kind == Token_ArrowRight) {
+	if (o && o->kind == Ast_SelectorExpr && o->SelectorExpr.token.kind == Token_ArrowRight) {
 		return ast_selector_call_expr(f, o->SelectorExpr.token, o, call);
 	}
 
@@ -3097,7 +3207,7 @@ gb_internal void parse_check_or_return(Ast *operand, char const *msg) {
 		syntax_error_with_verbose(operand, "'or_return' use within %s is not wrapped in parentheses (...)", msg);
 		break;
 	case Ast_OrBranchExpr:
-		syntax_error_with_verbose(operand, "'or_%.*s' use within %s is not wrapped in parentheses (...)", msg, LIT(operand->OrBranchExpr.token.string));
+		syntax_error_with_verbose(operand, "'%.*s' use within %s is not wrapped in parentheses (...)", msg, LIT(operand->OrBranchExpr.token.string));
 		break;
 	}
 }
@@ -3496,8 +3606,19 @@ gb_internal Array<Ast *> parse_ident_list(AstFile *f, bool allow_poly_names) {
 gb_internal Ast *parse_type(AstFile *f) {
 	Ast *type = parse_type_or_ident(f);
 	if (type == nullptr) {
-		Token token = advance_token(f);
-		syntax_error(token, "Expected a type");
+		Token prev_token = f->curr_token;
+		Token token = {};
+		if (f->curr_token.kind == Token_OpenBrace) {
+			token = f->curr_token;
+		} else {
+			token = advance_token(f);
+		}
+		String prev_token_str = prev_token.string;
+		if (prev_token_str == str_lit("\n")) {
+			syntax_error(token, "Expected a type, got newline");
+		} else {
+			syntax_error(token, "Expected a type, got '%.*s'", LIT(prev_token_str));
+		}
 		return ast_bad_expr(f, token, f->curr_token);
 	} else if (type->kind == Ast_ParenExpr &&
 	           unparen_expr(type) == nullptr) {
@@ -3736,8 +3857,10 @@ gb_internal Ast *parse_simple_stmt(AstFile *f, u32 flags) {
 					case Ast_TypeSwitchStmt:
 						stmt->TypeSwitchStmt.partial = true;
 						break;
+					default:
+						syntax_error(partial_token, "Incorrect use of directive, use '%.*s: #partial switch'", LIT(ast_token(name).string));
+						break;
 					}
-					syntax_error(partial_token, "Incorrect use of directive, use '#partial %.*s: switch'", LIT(ast_token(name).string));
 				} else if (is_reverse) {
 					switch (stmt->kind) {
 					case Ast_RangeStmt:
@@ -3949,6 +4072,7 @@ struct ParseFieldPrefixMapping {
 gb_global ParseFieldPrefixMapping const parse_field_prefix_mappings[] = {
 	{str_lit("using"),        Token_using,     FieldFlag_using},
 	{str_lit("no_alias"),     Token_Hash,      FieldFlag_no_alias},
+	{str_lit("no_capture"),   Token_Hash,      FieldFlag_no_capture},
 	{str_lit("c_vararg"),     Token_Hash,      FieldFlag_c_vararg},
 	{str_lit("const"),        Token_Hash,      FieldFlag_const},
 	{str_lit("any_int"),      Token_Hash,      FieldFlag_any_int},
@@ -4141,8 +4265,6 @@ gb_internal bool allow_field_separator(AstFile *f) {
 gb_internal Ast *parse_struct_field_list(AstFile *f, isize *name_count_) {
 	Token start_token = f->curr_token;
 
-	auto decls = array_make<Ast *>(ast_allocator(f));
-
 	isize total_name_count = 0;
 
 	Ast *params = parse_field_list(f, &total_name_count, FieldFlag_Struct, Token_CloseBrace, false, false);
@@ -4203,6 +4325,7 @@ gb_internal Ast *parse_field_list(AstFile *f, isize *name_count_, u32 allowed_fl
 	while (f->curr_token.kind != follow &&
 	       f->curr_token.kind != Token_Colon &&
 	       f->curr_token.kind != Token_EOF) {
+		if (!is_signature) parse_enforce_tabs(f);
 		u32 flags = parse_field_prefixes(f);
 		Ast *param = parse_var_type(f, allow_ellipsis, allow_typeid_token);
 		if (param->kind == Ast_Ellipsis) {
@@ -4283,15 +4406,21 @@ gb_internal Ast *parse_field_list(AstFile *f, isize *name_count_, u32 allowed_fl
 			}
 		}
 
-		allow_field_separator(f);
+		bool more_fields = allow_field_separator(f);
 		Ast *param = ast_field(f, names, type, default_value, set_flags, tag, docs, f->line_comment);
 		array_add(&params, param);
 
+		if (!more_fields) {
+			if (name_count_) *name_count_ = total_name_count;
+			return ast_field_list(f, start_token, params);
+		}
 
 		while (f->curr_token.kind != follow &&
 		       f->curr_token.kind != Token_EOF &&
 		       f->curr_token.kind != Token_Semicolon) {
 			CommentGroup *docs = f->lead_comment;
+
+			if (!is_signature) parse_enforce_tabs(f);
 			u32 set_flags = parse_field_prefixes(f);
 			Token tag = {};
 			Array<Ast *> names = parse_ident_list(f, allow_poly_names);
@@ -4452,12 +4581,19 @@ gb_internal bool parse_control_statement_semicolon_separator(AstFile *f) {
 }
 
 
+
+
+
 gb_internal Ast *parse_if_stmt(AstFile *f) {
 	if (f->curr_proc == nullptr) {
 		syntax_error(f->curr_token, "You cannot use an if statement in the file scope");
 		return ast_bad_stmt(f, f->curr_token, f->curr_token);
 	}
 
+	Ast *top_if_stmt = nullptr;
+
+	Ast *prev_if_stmt = nullptr;
+if_else_chain:;
 	Token token = expect_token(f, Token_if);
 	Ast *init = nullptr;
 	Ast *cond = nullptr;
@@ -4494,13 +4630,29 @@ gb_internal Ast *parse_if_stmt(AstFile *f) {
 		body = parse_block_stmt(f, false);
 	}
 
-	skip_possible_newline_for_literal(f);
+	bool ignore_strict_style = false;
+	if (token.pos.line == ast_end_token(body).pos.line) {
+		ignore_strict_style = true;
+	}
+	skip_possible_newline_for_literal(f, ignore_strict_style);
+
+	Ast *curr_if_stmt = ast_if_stmt(f, token, init, cond, body, nullptr);
+	if (top_if_stmt == nullptr) {
+		top_if_stmt = curr_if_stmt;
+	}
+	if (prev_if_stmt != nullptr) {
+		prev_if_stmt->IfStmt.else_stmt = curr_if_stmt;
+	}
+
 	if (f->curr_token.kind == Token_else) {
 		Token else_token = expect_token(f, Token_else);
 		switch (f->curr_token.kind) {
 		case Token_if:
-			else_stmt = parse_if_stmt(f);
-			break;
+			// NOTE(bill): Instead of relying on recursive descent for an if-else chain
+			// we can just inline the tail-recursion manually with a simple loop like
+			// construct using a `goto`
+			prev_if_stmt = curr_if_stmt;
+			goto if_else_chain;
 		case Token_OpenBrace:
 			else_stmt = parse_block_stmt(f, false);
 			break;
@@ -4515,7 +4667,9 @@ gb_internal Ast *parse_if_stmt(AstFile *f) {
 		}
 	}
 
-	return ast_if_stmt(f, token, init, cond, body, else_stmt);
+	curr_if_stmt->IfStmt.else_stmt = else_stmt;
+
+	return top_if_stmt;
 }
 
 gb_internal Ast *parse_when_stmt(AstFile *f) {
@@ -4526,9 +4680,12 @@ gb_internal Ast *parse_when_stmt(AstFile *f) {
 
 	isize prev_level = f->expr_level;
 	f->expr_level = -1;
+	bool prev_allow_in_expr = f->allow_in_expr;
+	f->allow_in_expr = true;
 
 	cond = parse_expr(f, false);
 
+	f->allow_in_expr = prev_allow_in_expr;
 	f->expr_level = prev_level;
 
 	if (cond == nullptr) {
@@ -4543,7 +4700,11 @@ gb_internal Ast *parse_when_stmt(AstFile *f) {
 		body = parse_block_stmt(f, true);
 	}
 
-	skip_possible_newline_for_literal(f);
+	bool ignore_strict_style = false;
+	if (token.pos.line == ast_end_token(body).pos.line) {
+		ignore_strict_style = true;
+	}
+	skip_possible_newline_for_literal(f, ignore_strict_style);
 	if (f->curr_token.kind == Token_else) {
 		Token else_token = expect_token(f, Token_else);
 		switch (f->curr_token.kind) {
@@ -4839,7 +5000,7 @@ gb_internal Ast *parse_import_decl(AstFile *f, ImportDeclKind kind) {
 	}
 
 	if (f->in_when_statement) {
-		syntax_error(import_name, "Cannot use 'import' within a 'when' statement. Prefer using the file suffixes (e.g. foo_windows.odin) or '//+build' tags");
+		syntax_error(import_name, "Cannot use 'import' within a 'when' statement. Prefer using the file suffixes (e.g. foo_windows.odin) or '#+build' tags");
 	}
 
 	if (kind != ImportDecl_Standard) {
@@ -4873,14 +5034,17 @@ gb_internal Ast *parse_foreign_decl(AstFile *f) {
 		if (is_blank_ident(lib_name)) {
 			syntax_error(lib_name, "Illegal foreign import name: '_'");
 		}
-		Array<Token> filepaths = {};
+		bool multiple_filepaths = false;
+
+		Array<Ast *> filepaths = {};
 		if (allow_token(f, Token_OpenBrace)) {
+			multiple_filepaths = true;
 			array_init(&filepaths, ast_allocator(f));
 
 			while (f->curr_token.kind != Token_CloseBrace &&
 			       f->curr_token.kind != Token_EOF) {
 
-				Token path = expect_token(f, Token_String);
+				Ast *path = parse_expr(f, false);
 				array_add(&filepaths, path);
 
 				if (!allow_field_separator(f)) {
@@ -4889,9 +5053,10 @@ gb_internal Ast *parse_foreign_decl(AstFile *f) {
 			}
 			expect_closing_brace_of_field_list(f);
 		} else {
-			filepaths = array_make<Token>(ast_allocator(f), 0, 1);
+			filepaths = array_make<Ast *>(ast_allocator(f), 0, 1);
 			Token path = expect_token(f, Token_String);
-			array_add(&filepaths, path);
+			Ast *lit = ast_basic_lit(f, path);
+			array_add(&filepaths, lit);
 		}
 
 		Ast *s = nullptr;
@@ -4900,9 +5065,9 @@ gb_internal Ast *parse_foreign_decl(AstFile *f) {
 			s = ast_bad_decl(f, lib_name, f->curr_token);
 		} else if (f->curr_proc != nullptr) {
 			syntax_error(lib_name, "You cannot use foreign import within a procedure. This must be done at the file scope");
-			s = ast_bad_decl(f, lib_name, filepaths[0]);
+			s = ast_bad_decl(f, lib_name, ast_token(filepaths[0]));
 		} else {
-			s = ast_foreign_import_decl(f, token, filepaths, lib_name, docs, f->line_comment);
+			s = ast_foreign_import_decl(f, token, filepaths, lib_name, multiple_filepaths, docs, f->line_comment);
 		}
 		expect_semicolon(f);
 		return s;
@@ -4974,6 +5139,40 @@ gb_internal Ast *parse_attribute(AstFile *f, Token token, TokenKind open_kind, T
 
 
 gb_internal Ast *parse_unrolled_for_loop(AstFile *f, Token unroll_token) {
+	Array<Ast *> args = {};
+
+	if (allow_token(f, Token_OpenParen)) {
+		f->expr_level++;
+		if (f->curr_token.kind == Token_CloseParen) {
+			syntax_error(f->curr_token, "#unroll expected at least 1 argument, got 0");
+		} else {
+			args = array_make<Ast *>(ast_allocator(f));
+			while (f->curr_token.kind != Token_CloseParen &&
+			       f->curr_token.kind != Token_EOF) {
+				Ast *arg = nullptr;
+				arg = parse_value(f);
+
+				if (f->curr_token.kind == Token_Eq) {
+					Token eq = expect_token(f, Token_Eq);
+					if (arg != nullptr && arg->kind != Ast_Ident) {
+						syntax_error(arg, "Expected an identifier for 'key=value'");
+					}
+					Ast *value = parse_value(f);
+					arg = ast_field_value(f, arg, value, eq);
+				}
+
+				array_add(&args, arg);
+
+				if (!allow_field_separator(f)) {
+					break;
+				}
+			}
+		}
+		f->expr_level--;
+		Token close = expect_closing(f, Token_CloseParen, str_lit("#unroll"));
+		gb_unused(close);
+	}
+
 	Token for_token = expect_token(f, Token_for);
 	Ast *val0 = nullptr;
 	Ast *val1 = nullptr;
@@ -5017,7 +5216,7 @@ gb_internal Ast *parse_unrolled_for_loop(AstFile *f, Token unroll_token) {
 	if (bad_stmt) {
 		return ast_bad_stmt(f, unroll_token, f->curr_token);
 	}
-	return ast_unroll_range_stmt(f, unroll_token, for_token, val0, val1, in_token, expr, body);
+	return ast_unroll_range_stmt(f, unroll_token, slice_from_array(args), for_token, val0, val1, in_token, expr, body);
 }
 
 gb_internal Ast *parse_stmt(AstFile *f) {
@@ -5161,7 +5360,7 @@ gb_internal Ast *parse_stmt(AstFile *f) {
 		} else if (tag == "unroll") {
 			return parse_unrolled_for_loop(f, name);
 		} else if (tag == "reverse") {
-			Ast *for_stmt = parse_for_stmt(f);
+			Ast *for_stmt = parse_stmt(f);
 			if (for_stmt->kind == Ast_RangeStmt) {
 				if (for_stmt->RangeStmt.reverse) {
 					syntax_error(token, "#reverse already applied to a 'for in' statement");
@@ -5174,6 +5373,38 @@ gb_internal Ast *parse_stmt(AstFile *f) {
 		} else if (tag == "include") {
 			syntax_error(token, "#include is not a valid import declaration kind. Did you mean 'import'?");
 			s = ast_bad_stmt(f, token, f->curr_token);
+		} else if (tag == "define") {
+			s = ast_bad_stmt(f, token, f->curr_token);
+
+			if (name.pos.line == f->curr_token.pos.line) {
+				bool call_like = false;
+				Ast *macro_expr = nullptr;
+				Token ident = f->curr_token;
+				if (allow_token(f, Token_Ident) &&
+				    name.pos.line == f->curr_token.pos.line) {
+					if (f->curr_token.kind == Token_OpenParen && f->curr_token.pos.column == ident.pos.column+ident.string.len) {
+						call_like = true;
+						(void)parse_call_expr(f, nullptr);
+					}
+
+					if (name.pos.line == f->curr_token.pos.line && f->curr_token.kind != Token_Semicolon) {
+						macro_expr = parse_expr(f, false);
+					}
+				}
+
+				ERROR_BLOCK();
+				syntax_error(ident, "#define is not a valid declaration, Odin does not have a C-like preprocessor.");
+				if (macro_expr == nullptr || call_like) {
+					error_line("\tNote: Odin does not support macros\n");
+				} else {
+					gbString s = expr_to_string(macro_expr);
+					error_line("\tSuggestion: Did you mean '%.*s :: %s'?\n", LIT(ident.string), s);
+					gb_string_free(s);
+				}
+			} else {
+				syntax_error(token, "#define is not a valid declaration, Odin does not have a C-like preprocessor.");
+			}
+
 		} else {
 			syntax_error(token, "Unknown tag directive used: '%.*s'", LIT(tag));
 			s = ast_bad_stmt(f, token, f->curr_token);
@@ -5191,6 +5422,12 @@ gb_internal Ast *parse_stmt(AstFile *f) {
 		s = ast_empty_stmt(f, token);
 		expect_semicolon(f);
 		return s;
+
+	case Token_FileTag:
+		// This is always an error because all valid file tags will have been processed in `parse_file` already.
+		// Any remaining file tags must be past the package line and thus invalid.
+		syntax_error(token, "Lines starting with #+ (file tags) are only allowed before the package line.");
+		return ast_bad_stmt(f, token, f->curr_token);
 	}
 
 	// Error correction statements
@@ -5225,12 +5462,49 @@ gb_internal Ast *parse_stmt(AstFile *f) {
 	return ast_bad_stmt(f, token, f->curr_token);
 }
 
+
+gb_internal void parse_enforce_tabs(AstFile *f) {
+	// Checks to see if tabs have been used for indentation
+	if ((ast_file_vet_flags(f) & VetFlag_Tabs) == 0) {
+		return;
+	}
+
+       	Token prev = f->prev_token;
+	Token curr = f->curr_token;
+	if (prev.pos.line < curr.pos.line) {
+		u8 *start = f->tokenizer.start+prev.pos.offset;
+		u8 *end   = f->tokenizer.start+curr.pos.offset;
+		u8 *it = end;
+		while (it > start) {
+			if (*it == '\n') {
+				it++;
+				break;
+			}
+			it--;
+		}
+
+		isize len = end-it;
+		for (isize i = 0; i < len; i++) {
+			if (it[i] == '/') {
+				// ignore comments
+				break;
+			}
+			if (it[i] == ' ') {
+				syntax_error(curr, "With '-vet-tabs', tabs must be used for indentation");
+				break;
+			}
+		}
+	}
+}
+
 gb_internal Array<Ast *> parse_stmt_list(AstFile *f) {
 	auto list = array_make<Ast *>(ast_allocator(f));
 
 	while (f->curr_token.kind != Token_case &&
 	       f->curr_token.kind != Token_CloseBrace &&
 	       f->curr_token.kind != Token_EOF) {
+		parse_enforce_tabs(f);
+
 		Ast *stmt = parse_stmt(f);
 		if (stmt && stmt->kind != Ast_EmptyStmt) {
 			array_add(&list, stmt);
@@ -5256,7 +5530,7 @@ gb_internal ParseFileError init_ast_file(AstFile *f, String const &fullpath, Tok
 	if (!string_ends_with(f->fullpath, str_lit(".odin"))) {
 		return ParseFile_WrongExtension;
 	}
-	zero_item(&f->tokenizer);
+	gb_zero_item(&f->tokenizer);
 	f->tokenizer.curr_file_id = f->id;
 
 	TokenizerInitError err = init_tokenizer_from_fullpath(&f->tokenizer, f->fullpath, build_context.copy_file_contents);
@@ -5387,6 +5661,7 @@ gb_internal WORKER_TASK_PROC(parser_worker_proc) {
 
 gb_internal void parser_add_file_to_process(Parser *p, AstPackage *pkg, FileInfo fi, TokenPos pos) {
 	ImportedFile f = {pkg, fi, pos, p->file_to_process_count++};
+	f.pos.file_id = cast(i32)(f.index+1);
 	auto wd = gb_alloc_item(permanent_allocator(), ParserWorkerData);
 	wd->parser = p;
 	wd->imported_file = f;
@@ -5423,6 +5698,7 @@ gb_internal WORKER_TASK_PROC(foreign_file_worker_proc) {
 gb_internal void parser_add_foreign_file_to_process(Parser *p, AstPackage *pkg, AstForeignFileKind kind, FileInfo fi, TokenPos pos) {
 	// TODO(bill): Use a better allocator
 	ImportedFile f = {pkg, fi, pos, p->file_to_process_count++};
+	f.pos.file_id = cast(i32)(f.index+1);
 	auto wd = gb_alloc_item(permanent_allocator(), ForeignFileWorkerData);
 	wd->parser = p;
 	wd->imported_file = f;
@@ -5450,7 +5726,7 @@ gb_internal AstPackage *try_add_import_path(Parser *p, String path, String const
 	pkg->foreign_files.allocator = permanent_allocator();
 
 	// NOTE(bill): Single file initial package
-	if (kind == Package_Init && string_ends_with(path, FILE_EXT)) {
+	if (kind == Package_Init && !path_is_directory(path) && string_ends_with(path, FILE_EXT)) {
 		FileInfo fi = {};
 		fi.name = filename_from_path(path);
 		fi.fullpath = path;
@@ -5508,10 +5784,14 @@ gb_internal AstPackage *try_add_import_path(Parser *p, String path, String const
 		}
 	}
 	if (files_with_ext == 0 || files_to_reserve == 1) {
+		ERROR_BLOCK();
 		if (files_with_ext != 0) {
 			syntax_error(pos, "Directory contains no .odin files for the specified platform: %.*s", LIT(rel_path));
 		} else {
 			syntax_error(pos, "Empty directory that contains no .odin files: %.*s", LIT(rel_path));
+		}
+		if (build_context.command_kind == Command_test) {
+			error_line("\tSuggestion: Make an .odin file that imports packages to test and use the `-all-packages` flag.");
 		}
 		return nullptr;
 	}
@@ -5635,8 +5915,18 @@ gb_internal bool is_package_name_reserved(String const &name) {
 }
 
 
-gb_internal bool determine_path_from_string(BlockingMutex *file_mutex, Ast *node, String base_dir, String const &original_string, String *path) {
+gb_internal bool determine_path_from_string(BlockingMutex *file_mutex, Ast *node, String base_dir, String const &original_string, String *path, bool use_check_errors=false) {
 	GB_ASSERT(path != nullptr);
+
+	void (*do_error)(Ast *, char const *, ...);
+	void (*do_warning)(Token const &, char const *, ...);
+
+	do_error = &syntax_error;
+	do_warning = &syntax_warning;
+	if (use_check_errors) {
+		do_error = &error;
+		do_error = &warning;
+	}
 
 	// NOTE(bill): if file_mutex == nullptr, this means that the code is used within the semantics stage
 
@@ -5664,7 +5954,7 @@ gb_internal bool determine_path_from_string(BlockingMutex *file_mutex, Ast *node
 
 	String file_str = {};
 	if (colon_pos == 0) {
-		syntax_error(node, "Expected a collection name");
+		do_error(node, "Expected a collection name");
 		return false;
 	}
 
@@ -5679,24 +5969,41 @@ gb_internal bool determine_path_from_string(BlockingMutex *file_mutex, Ast *node
 	if (has_windows_drive) {
 		String sub_file_path = substring(file_str, 3, file_str.len);
 		if (!is_import_path_valid(sub_file_path)) {
-			syntax_error(node, "Invalid import path: '%.*s'", LIT(file_str));
+			do_error(node, "Invalid import path: '%.*s'", LIT(file_str));
 			return false;
 		}
 	} else if (!is_import_path_valid(file_str)) {
-		syntax_error(node, "Invalid import path: '%.*s'", LIT(file_str));
+		do_error(node, "Invalid import path: '%.*s'", LIT(file_str));
 		return false;
 	}
 
-
 	if (collection_name.len > 0) {
 		// NOTE(bill): `base:runtime` == `core:runtime`
-		if (collection_name == "core" && string_starts_with(file_str, str_lit("runtime"))) {
-			collection_name = str_lit("base");
+		if (collection_name == "core") {
+			bool replace_with_base = false;
+			if (string_starts_with(file_str, str_lit("runtime"))) {
+				replace_with_base = true;
+			} else if (string_starts_with(file_str, str_lit("intrinsics"))) {
+				replace_with_base = true;
+			} if (string_starts_with(file_str, str_lit("builtin"))) {
+				replace_with_base = true;
+			}
+
+			if (replace_with_base) {
+				collection_name = str_lit("base");
+			}
+			if (replace_with_base) {
+				if (ast_file_vet_deprecated(node->file())) {
+					do_error(node, "import \"core:%.*s\" has been deprecated in favour of \"base:%.*s\"", LIT(file_str), LIT(file_str));
+				} else {
+					do_warning(ast_token(node), "import \"core:%.*s\" has been deprecated in favour of \"base:%.*s\"", LIT(file_str), LIT(file_str));
+				}
+			}
 		}
 
 		if (collection_name == "system") {
 			if (node->kind != Ast_ForeignImportDecl) {
-				syntax_error(node, "The library collection 'system' is restrict for 'foreign_library'");
+				do_error(node, "The library collection 'system' is restrict for 'foreign import'");
 				return false;
 			} else {
 				*path = file_str;
@@ -5704,23 +6011,9 @@ gb_internal bool determine_path_from_string(BlockingMutex *file_mutex, Ast *node
 			}
 		} else if (!find_library_collection_path(collection_name, &base_dir)) {
 			// NOTE(bill): It's a naughty name
-			syntax_error(node, "Unknown library collection: '%.*s'", LIT(collection_name));
+			do_error(node, "Unknown library collection: '%.*s'", LIT(collection_name));
 			return false;
 		}
-	} else {
-#if !defined(GB_SYSTEM_WINDOWS)
-		// @NOTE(vassvik): foreign imports of shared libraries that are not in the system collection on
-		//                 linux/mac have to be local to the executable for consistency with shared libraries.
-		//                 Unix does not have a concept of "import library" for shared/dynamic libraries,
-		//                 so we need to pass the relative path to the linker, and add the current
-		//                 working directory of the exe to the library search paths.
-		//                 Static libraries can be linked directly with the full pathname
-		//
-		if (node->kind == Ast_ForeignImportDecl && (string_ends_with(file_str, str_lit(".so")) || string_contains_string(file_str, str_lit(".so.")))) {
-			*path = file_str;
-			return true;
-		}
-#endif
 	}
 
 	if (is_package_name_reserved(file_str)) {
@@ -5728,7 +6021,7 @@ gb_internal bool determine_path_from_string(BlockingMutex *file_mutex, Ast *node
 		if (collection_name == "core" || collection_name == "base") {
 			return true;
 		} else {
-			syntax_error(node, "The package '%.*s' must be imported with the 'base' library collection: 'base:%.*s'", LIT(file_str), LIT(file_str));
+			do_error(node, "The package '%.*s' must be imported with the 'base' library collection: 'base:%.*s'", LIT(file_str), LIT(file_str));
 			return false;
 		}
 	}
@@ -5813,30 +6106,29 @@ gb_internal void parse_setup_file_decls(Parser *p, AstFile *f, String const &bas
 		} else if (node->kind == Ast_ForeignImportDecl) {
 			ast_node(fl, ForeignImportDecl, node);
 
-			auto fullpaths = array_make<String>(permanent_allocator(), 0, fl->filepaths.count);
-
-			for (Token const &fp : fl->filepaths) {
-				String file_str = string_trim_whitespace(string_value_from_token(f, fp));
+			if (fl->filepaths.count == 0) {
+				syntax_error(decls[i], "No foreign paths found");
+				decls[i] = ast_bad_decl(f, ast_token(fl->filepaths[0]), ast_end_token(fl->filepaths[fl->filepaths.count-1]));
+				goto end;
+			} else if (!fl->multiple_filepaths &&
+			           fl->filepaths.count == 1) {
+				Ast *fp = fl->filepaths[0];
+				GB_ASSERT(fp->kind == Ast_BasicLit);
+				Token fp_token = fp->BasicLit.token;
+				String file_str = string_trim_whitespace(string_value_from_token(f, fp_token));
 				String fullpath = file_str;
-				if (allow_check_foreign_filepath()) {
+				if (!is_arch_wasm() || string_ends_with(fullpath, str_lit(".o"))) {
 					String foreign_path = {};
 					bool ok = determine_path_from_string(&p->file_decl_mutex, node, base_dir, file_str, &foreign_path);
 					if (!ok) {
-						decls[i] = ast_bad_decl(f, fp, fl->filepaths[fl->filepaths.count-1]);
+						decls[i] = ast_bad_decl(f, fp_token, fp_token);
 						goto end;
 					}
 					fullpath = foreign_path;
 				}
-				array_add(&fullpaths, fullpath);
+				fl->fullpaths = slice_make<String>(permanent_allocator(), 1);
+				fl->fullpaths[0] = fullpath;
 			}
-			if (fullpaths.count == 0) {
-				syntax_error(decls[i], "No foreign paths found");
-				decls[i] = ast_bad_decl(f, fl->filepaths[0], fl->filepaths[fl->filepaths.count-1]);
-				goto end;
-			}
-
-			fl->fullpaths = slice_from_array(fullpaths);
-
 
 		} else if (node->kind == Ast_WhenStmt) {
 			ast_node(ws, WhenStmt, node);
@@ -5867,7 +6159,7 @@ gb_internal String build_tag_get_token(String s, String *out) {
 }
 
 gb_internal bool parse_build_tag(Token token_for_pos, String s) {
-	String const prefix = str_lit("+build");
+	String const prefix = str_lit("build");
 	GB_ASSERT(string_starts_with(s, prefix));
 	s = string_trim_whitespace(substring(s, prefix.len, s.len));
 
@@ -5879,6 +6171,10 @@ gb_internal bool parse_build_tag(Token token_for_pos, String s) {
 
 	while (s.len > 0) {
 		bool this_kind_correct = true;
+
+		bool this_kind_os_seen = false;
+		bool this_kind_arch_seen = false;
+		int num_tokens = 0;
 
 		do {
 			String p = string_trim_whitespace(build_tag_get_token(s, &s));
@@ -5905,7 +6201,18 @@ gb_internal bool parse_build_tag(Token token_for_pos, String s) {
 
 			TargetOsKind   os   = get_target_os_from_string(p);
 			TargetArchKind arch = get_target_arch_from_string(p);
+			num_tokens += 1;
+
+			// Catches 'windows linux', which is an impossible combination.
+			// Also catches usage of more than two things within a comma separated group.
+			if (num_tokens > 2 || (this_kind_os_seen && os != TargetOs_Invalid) || (this_kind_arch_seen && arch != TargetArch_Invalid)) {
+				syntax_error(token_for_pos, "Invalid build tag: Missing ',' before '%.*s'. Format: '#+build linux, windows amd64, darwin'", LIT(p));
+				break;
+			}
+
 			if (os != TargetOs_Invalid) {
+				this_kind_os_seen = true;
+
 				GB_ASSERT(arch == TargetArch_Invalid);
 				if (is_notted) {
 					this_kind_correct = this_kind_correct && (os != build_context.metrics.os);
@@ -5913,6 +6220,8 @@ gb_internal bool parse_build_tag(Token token_for_pos, String s) {
 					this_kind_correct = this_kind_correct && (os == build_context.metrics.os);
 				}
 			} else if (arch != TargetArch_Invalid) {
+				this_kind_arch_seen = true;
+
 				if (is_notted) {
 					this_kind_correct = this_kind_correct && (arch != build_context.metrics.arch);
 				} else {
@@ -5952,7 +6261,7 @@ gb_internal String vet_tag_get_token(String s, String *out) {
 
 
 gb_internal u64 parse_vet_tag(Token token_for_pos, String s) {
-	String const prefix = str_lit("+vet");
+	String const prefix = str_lit("vet");
 	GB_ASSERT(string_starts_with(s, prefix));
 	s = string_trim_whitespace(substring(s, prefix.len, s.len));
 
@@ -5992,10 +6301,16 @@ gb_internal u64 parse_vet_tag(Token token_for_pos, String s) {
 			syntax_error(token_for_pos, "Invalid vet flag name: %.*s", LIT(p));
 			error_line("\tExpected one of the following\n");
 			error_line("\tunused\n");
+			error_line("\tunused-variables\n");
+			error_line("\tunused-imports\n");
+			error_line("\tunused-procedures\n");
 			error_line("\tshadowing\n");
 			error_line("\tusing-stmt\n");
 			error_line("\tusing-param\n");
+			error_line("\tstyle\n");
 			error_line("\textra\n");
+			error_line("\tcast\n");
+			error_line("\ttabs\n");
 			return build_context.vet_flags;
 		}
 	}
@@ -6011,6 +6326,63 @@ gb_internal u64 parse_vet_tag(Token token_for_pos, String s) {
 	}
 	GB_ASSERT(vet_flags != 0 && vet_not_flags != 0);
 	return vet_flags &~ vet_not_flags;
+}
+
+gb_internal u64 parse_feature_tag(Token token_for_pos, String s) {
+	String const prefix = str_lit("feature");
+	GB_ASSERT(string_starts_with(s, prefix));
+	s = string_trim_whitespace(substring(s, prefix.len, s.len));
+
+	if (s.len == 0) {
+		return OptInFeatureFlag_NONE;
+	}
+
+	u64 feature_flags = 0;
+	u64 feature_not_flags = 0;
+
+	while (s.len > 0) {
+		String p = string_trim_whitespace(vet_tag_get_token(s, &s));
+		if (p.len == 0) {
+			break;
+		}
+
+		bool is_notted = false;
+		if (p[0] == '!') {
+			is_notted = true;
+			p = substring(p, 1, p.len);
+			if (p.len == 0) {
+				syntax_error(token_for_pos, "Expected a feature flag name after '!'");
+				return OptInFeatureFlag_NONE;
+			}
+		}
+
+		u64 flag = get_feature_flag_from_name(p);
+		if (flag != OptInFeatureFlag_NONE) {
+			if (is_notted) {
+				feature_not_flags |= flag;
+			} else {
+				feature_flags     |= flag;
+			}
+		} else {
+			ERROR_BLOCK();
+			syntax_error(token_for_pos, "Invalid feature flag name: %.*s", LIT(p));
+			error_line("\tExpected one of the following\n");
+			error_line("\tdynamic-literals\n");
+			return OptInFeatureFlag_NONE;
+		}
+	}
+
+	if (feature_flags == 0 && feature_not_flags == 0) {
+		return OptInFeatureFlag_NONE;
+	}
+	if (feature_flags == 0 && feature_not_flags != 0) {
+		return OptInFeatureFlag_NONE &~ feature_not_flags;
+	}
+	if (feature_flags != 0 && feature_not_flags == 0) {
+		return feature_flags;
+	}
+	GB_ASSERT(feature_flags != 0 && feature_not_flags != 0);
+	return feature_flags &~ feature_not_flags;
 }
 
 gb_internal String dir_from_path(String path) {
@@ -6057,7 +6429,7 @@ gb_internal isize calc_decl_count(Ast *decl) {
 }
 
 gb_internal bool parse_build_project_directory_tag(Token token_for_pos, String s) {
-	String const prefix = str_lit("+build-project-name");
+	String const prefix = str_lit("build-project-name");
 	GB_ASSERT(string_starts_with(s, prefix));
 	s = string_trim_whitespace(substring(s, prefix.len, s.len));
 	if (s.len == 0) {
@@ -6101,6 +6473,51 @@ gb_internal bool parse_build_project_directory_tag(Token token_for_pos, String s
 	return any_correct;
 }
 
+gb_internal bool parse_file_tag(const String &lc, const Token &tok, AstFile *f) {
+	if (string_starts_with(lc, str_lit("build-project-name"))) {
+		if (!parse_build_project_directory_tag(tok, lc)) {
+			return false;
+		}
+	} else if (string_starts_with(lc, str_lit("build"))) {
+		if (!parse_build_tag(tok, lc)) {
+			return false;
+		}
+	} else if (string_starts_with(lc, str_lit("vet"))) {
+		f->vet_flags = parse_vet_tag(tok, lc);
+		f->vet_flags_set = true;
+	} else if (string_starts_with(lc, str_lit("ignore"))) {
+		return false;
+	} else if (string_starts_with(lc, str_lit("private"))) {
+		f->flags |= AstFile_IsPrivatePkg;
+		String command = string_trim_starts_with(lc, str_lit("private "));
+		command = string_trim_whitespace(command);
+		if (lc == "private") {
+			f->flags |= AstFile_IsPrivatePkg;
+		} else if (command == "package") {
+			f->flags |= AstFile_IsPrivatePkg;
+		} else if (command == "file") {
+			f->flags |= AstFile_IsPrivateFile;
+		}
+	} else if (string_starts_with(lc, str_lit("feature"))) {
+		f->feature_flags |= parse_feature_tag(tok, lc);
+		f->feature_flags_set = true;
+	} else if (lc == "lazy") {
+		if (build_context.ignore_lazy) {
+			// Ignore
+		} else if (f->pkg->kind == Package_Init && build_context.command_kind == Command_doc) {
+			// Ignore
+		} else {
+			f->flags |= AstFile_IsLazy;
+		}
+	} else if (lc == "no-instrumentation") {
+		f->flags |= AstFile_NoInstrumentation;
+	} else {
+		error(tok, "Unknown tag '%.*s'", LIT(lc));
+	}
+
+	return true;
+}
+
 gb_internal bool parse_file(Parser *p, AstFile *f) {
 	if (f->tokens.count == 0) {
 		return true;
@@ -6119,9 +6536,34 @@ gb_internal bool parse_file(Parser *p, AstFile *f) {
 
 	CommentGroup *docs = f->lead_comment;
 
+	Array<Token> tags = array_make<Token>(temporary_allocator());
+	bool first_invalid_token_set = false;
+	Token first_invalid_token = {};
+
+	while (f->curr_token.kind != Token_package && f->curr_token.kind != Token_EOF) {
+		if (f->curr_token.kind == Token_Comment) {
+			consume_comment_groups(f, f->prev_token);
+		} else if (f->curr_token.kind == Token_FileTag) {
+			array_add(&tags, f->curr_token);
+			advance_token(f);
+		} else {
+			if (!first_invalid_token_set) {
+				first_invalid_token_set = true;
+				first_invalid_token = f->curr_token;
+			}
+
+			advance_token(f);
+		}
+	}
+
 	if (f->curr_token.kind != Token_package) {
 		ERROR_BLOCK();
-		syntax_error(f->curr_token, "Expected a package declaration at the beginning of the file");
+
+		// The while loop above scanned until it found the package token. If we never
+		// found one, then make this error appear on the first invalid token line.
+		Token t = first_invalid_token_set ? first_invalid_token : f->curr_token;
+		syntax_error(t, "Expected a package declaration at the beginning of the file");
+
 		// IMPORTANT NOTE(bill): this is technically a race condition with the suggestion, but it's ony a suggession
 		// so in practice is should be "fine"
 		if (f->pkg && f->pkg->name != "") {
@@ -6130,17 +6572,15 @@ gb_internal bool parse_file(Parser *p, AstFile *f) {
 		return false;
 	}
 
+	// There was an OK package declaration. But there some invalid token was hit before the package declaration.
+	if (first_invalid_token_set) {
+		syntax_error(first_invalid_token, "Expected only comments or lines starting with '#+' before the package declaration");
+		return false;
+	}
+
 	f->package_token = expect_token(f, Token_package);
 	if (f->package_token.kind != Token_package) {
 		return false;
-	}
-	if (docs != nullptr) {
-		TokenPos end = token_pos_end(docs->list[docs->list.count-1]);
-		if (end.line == f->package_token.pos.line || end.line+1 == f->package_token.pos.line) {
-			// Okay
-		} else {
-			docs = nullptr;
-		}
 	}
 
 	Token package_name = expect_token_after(f, Token_Ident, "package");
@@ -6155,52 +6595,35 @@ gb_internal bool parse_file(Parser *p, AstFile *f) {
 	}
 	f->package_name = package_name.string;
 
-	if (!f->pkg->is_single_file && docs != nullptr && docs->list.count > 0) {
-		for (Token const &tok : docs->list) {
-			GB_ASSERT(tok.kind == Token_Comment);
-			String str = tok.string;
-			if (string_starts_with(str, str_lit("//"))) {
+	{
+		if (docs != nullptr && docs->list.count > 0) {
+			for (Token const &tok : docs->list) {
+				GB_ASSERT(tok.kind == Token_Comment);
+				String str = tok.string;
+
+				if (!string_starts_with(str, str_lit("//"))) {
+					continue;
+				}
+
 				String lc = string_trim_whitespace(substring(str, 2, str.len));
-				if (lc.len > 0 && lc[0] == '+') {
-					 if (string_starts_with(lc, str_lit("+build-project-name"))) {
-						if (!parse_build_project_directory_tag(tok, lc)) {
-							return false;
-						}
-					} else if (string_starts_with(lc, str_lit("+build"))) {
-						if (!parse_build_tag(tok, lc)) {
-							return false;
-						}
-					} else if (string_starts_with(lc, str_lit("+vet"))) {
-						f->vet_flags = parse_vet_tag(tok, lc);
-						f->vet_flags_set = true;
-					} else if (string_starts_with(lc, str_lit("+ignore"))) {
+				if (string_starts_with(lc, str_lit("+"))) {
+					syntax_warning(tok, "'//+' is deprecated: Use '#+' instead");
+					String lt = substring(lc, 1, lc.len);
+					if (parse_file_tag(lt, tok, f) == false) {
 						return false;
-					} else if (string_starts_with(lc, str_lit("+private"))) {
-						f->flags |= AstFile_IsPrivatePkg;
-						String command = string_trim_starts_with(lc, str_lit("+private "));
-						command = string_trim_whitespace(command);
-						if (lc == "+private") {
-							f->flags |= AstFile_IsPrivatePkg;
-						} else if (command == "package") {
-							f->flags |= AstFile_IsPrivatePkg;
-						} else if (command == "file") {
-							f->flags |= AstFile_IsPrivateFile;
-						}
-					} else if (lc == "+lazy") {
-						if (build_context.ignore_lazy) {
-							// Ignore
-						} else if (f->flags & AstFile_IsTest) {
-							// Ignore
-						} else if (f->pkg->kind == Package_Init && build_context.command_kind == Command_doc) {
-							// Ignore
-						} else {
-							f->flags |= AstFile_IsLazy;
-						}
-					} else if (lc == "+no-instrumentation") {
-						f->flags |= AstFile_NoInstrumentation;
-					} else {
-						warning(tok, "Ignoring unknown tag '%.*s'", LIT(lc));
 					}
+				}
+			}
+		}
+
+		for (Token const &tok : tags) {
+			GB_ASSERT(tok.kind == Token_FileTag);
+			String str = tok.string;
+
+			if (string_starts_with(str, str_lit("#+"))) {
+				String lt = string_trim_whitespace(substring(str, 2, str.len));
+				if (parse_file_tag(lt, tok, f) == false) {
+					return false;
 				}
 			}
 		}
@@ -6224,7 +6647,7 @@ gb_internal bool parse_file(Parser *p, AstFile *f) {
 				}
 
 				f->total_file_decl_count += calc_decl_count(stmt);
-				if (stmt->kind == Ast_WhenStmt || stmt->kind == Ast_ExprStmt || stmt->kind == Ast_ImportDecl) {
+				if (stmt->kind == Ast_WhenStmt || stmt->kind == Ast_ExprStmt || stmt->kind == Ast_ImportDecl || stmt->kind == Ast_ForeignBlockDecl) {
 					f->delayed_decl_count += 1;
 				}
 			}
@@ -6308,11 +6731,6 @@ gb_internal ParseFileError process_imported_file(Parser *p, ImportedFile importe
 	if (build_context.command_kind == Command_test) {
 		String name = file->fullpath;
 		name = remove_extension_from_path(name);
-
-		String test_suffix = str_lit("_test");
-		if (string_ends_with(name, test_suffix) && name != test_suffix) {
-			file->flags |= AstFile_IsTest;
-		}
 	}
 
 
@@ -6347,6 +6765,7 @@ gb_internal ParseFileError parse_packages(Parser *p, String init_filename) {
 	GB_ASSERT(init_filename.text[init_filename.len] == 0);
 
 	String init_fullpath = path_to_full_path(permanent_allocator(), init_filename);
+
 	if (!path_is_directory(init_fullpath)) {
 		String const ext = str_lit(".odin");
 		if (!string_ends_with(init_fullpath, ext)) {
@@ -6360,9 +6779,8 @@ gb_internal ParseFileError parse_packages(Parser *p, String init_filename) {
 		}
 		if ((build_context.command_kind & Command__does_build) &&
 		    build_context.build_mode == BuildMode_Executable) {
-			String short_path = filename_from_path(path);
-			char *cpath = alloc_cstring(temporary_allocator(), short_path);
-			if (gb_file_exists(cpath)) {
+			String output_path = path_to_string(temporary_allocator(), build_context.build_paths[8]);
+			if (path_is_directory(output_path)) {
 			    	error({}, "Please specify the executable name with -out:<string> as a directory exists with the same name in the current working directory");
 			    	return ParseFile_DirectoryAlreadyExists;
 			}
@@ -6430,6 +6848,13 @@ gb_internal ParseFileError parse_packages(Parser *p, String init_filename) {
 			}
 		}
 	}
+
+	for (AstPackage *pkg : p->packages) {
+		for (AstFile *file : pkg->files) {
+			p->total_seen_load_directive_count += file->seen_load_directive_count;
+		}
+	}
+
 	return ParseFile_None;
 }
 

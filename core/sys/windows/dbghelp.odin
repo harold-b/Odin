@@ -1,4 +1,4 @@
-// +build windows
+#+build windows
 package sys_windows
 
 foreign import "system:Dbghelp.lib"
@@ -15,7 +15,7 @@ MINIDUMP_DIRECTORY :: struct {
 	Location:   MINIDUMP_LOCATION_DESCRIPTOR,
 }
 
-MINIDUMP_EXCEPTION_INFORMATION :: struct {
+MINIDUMP_EXCEPTION_INFORMATION :: struct #max_field_align(4) {
 	ThreadId:          DWORD,
 	ExceptionPointers: ^EXCEPTION_POINTERS,
 	ClientPointers:    BOOL,

@@ -46,8 +46,7 @@ init_with_contents :: proc(q: ^$Q/Queue($T), backing: []T) -> bool {
 		cap = builtin.len(backing),
 		allocator = {procedure=runtime.nil_allocator_proc, data=nil},
 	}
-	q.len    = len(backing)
-	q.offset = len(backing)
+	q.len = builtin.len(backing)
 	return true
 }
 
@@ -95,11 +94,11 @@ front_ptr :: proc(q: ^$Q/Queue($T)) -> ^T {
 }
 
 back :: proc(q: ^$Q/Queue($T)) -> T {
-	idx := (q.offset+uint(q.len))%builtin.len(q.data)
+	idx := (q.offset+uint(q.len - 1))%builtin.len(q.data)
 	return q.data[idx]
 }
 back_ptr :: proc(q: ^$Q/Queue($T)) -> ^T {
-	idx := (q.offset+uint(q.len))%builtin.len(q.data)
+	idx := (q.offset+uint(q.len - 1))%builtin.len(q.data)
 	return &q.data[idx]
 }
 
@@ -189,7 +188,7 @@ pop_front_safe :: proc(q: ^$Q/Queue($T)) -> (elem: T, ok: bool) {
 	return
 }
 
-// Push multiple elements to the front of the queue
+// Push multiple elements to the back of the queue
 push_back_elems :: proc(q: ^$Q/Queue($T), elems: ..T) -> (ok: bool, err: runtime.Allocator_Error)  {
 	n := uint(builtin.len(elems))
 	if space(q^) < int(n) {
@@ -241,7 +240,7 @@ clear :: proc(q: ^$Q/Queue($T)) {
 }
 
 
-// Internal growinh procedure
+// Internal growing procedure
 _grow :: proc(q: ^$Q/Queue($T), min_capacity: uint = 0) -> runtime.Allocator_Error {
 	new_capacity := max(min_capacity, uint(8), uint(builtin.len(q.data))*2)
 	n := uint(builtin.len(q.data))

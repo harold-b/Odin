@@ -2,30 +2,15 @@ package test_core_crypto
 
 import "base:runtime"
 import "core:encoding/hex"
-import "core:fmt"
 import "core:testing"
-
 import "core:crypto/kmac"
 import "core:crypto/shake"
 import "core:crypto/tuplehash"
-
-import tc "tests:common"
-
-@(test)
-test_sha3_variants :: proc(t: ^testing.T) {
-	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
-
-	tc.log(t, "Testing SHA3 derived functions")
-
-	test_shake(t)
-	test_cshake(t)
-	test_tuplehash(t)
-	test_kmac(t)
-}
+import "core:strings"
 
 @(test)
 test_shake :: proc(t: ^testing.T) {
-	tc.log(t, "Testing SHAKE")
+	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
 
 	test_vectors := []struct {
 		sec_strength: int,
@@ -67,23 +52,21 @@ test_shake :: proc(t: ^testing.T) {
 
 		dst_str := string(hex.encode(dst, context.temp_allocator))
 
-		tc.expect(
+		testing.expectf(
 			t,
 			dst_str == v.output,
-			fmt.tprintf(
-				"SHAKE%d: Expected: %s for input of %s, but got %s instead",
-				v.sec_strength,
-				v.output,
-				v.str,
-				dst_str,
-			),
+			"SHAKE%d: Expected: %s for input of %s, but got %s instead",
+			v.sec_strength,
+			v.output,
+			v.str,
+			dst_str,
 		)
 	}
 }
 
 @(test)
 test_cshake :: proc(t: ^testing.T) {
-	tc.log(t, "Testing cSHAKE")
+	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
 
 	test_vectors := []struct {
 		sec_strength: int,
@@ -120,6 +103,22 @@ test_cshake :: proc(t: ^testing.T) {
 			"07dc27b11e51fbac75bc7b3c1d983e8b4b85fb1defaf218912ac86430273091727f42b17ed1df63e8ec118f04b23633c1dfb1574c8fb55cb45da8e25afb092bb",
 			"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7",
 		},
+
+		// cSHAKE128 - bytepad edge case (https://github.com/golang/go/issues/69169)
+		//
+		// If the implementation incorrectly pads an extra rate-bytes of 0s
+		// if the domain separator is exactly rate-bytes long, this will
+		// return:
+		//
+		//  430d3ebae1528304465f3b6f2ed34a7b931af804afe97d0e2a2796abf5725281
+		//
+		// See: https://github.com/golang/go/issues/69169
+		{
+			128,
+			strings.repeat("x", 168-7, context.temp_allocator),
+			"2cf20c4b26c9ee7751eaa273368e616c868e7275178634e1ecdbac80d4cab5f4",
+			"",
+		},
 	}
 
 	for v in test_vectors {
@@ -135,29 +134,27 @@ test_cshake :: proc(t: ^testing.T) {
 			shake.init_cshake_256(&ctx, domainsep)
 		}
 
-		data, _ := hex.decode(transmute([]byte)(v.str))
+		data, _ := hex.decode(transmute([]byte)(v.str), context.temp_allocator)
 		shake.write(&ctx, data)
 		shake.read(&ctx, dst)
 
 		dst_str := string(hex.encode(dst, context.temp_allocator))
 
-		tc.expect(
+		testing.expectf(
 			t,
 			dst_str == v.output,
-			fmt.tprintf(
-				"cSHAKE%d: Expected: %s for input of %s, but got %s instead",
-				v.sec_strength,
-				v.output,
-				v.str,
-				dst_str,
-			),
+			"cSHAKE%d: Expected: %s for input of %s, but got %s instead",
+			v.sec_strength,
+			v.output,
+			v.str,
+			dst_str,
 		)
 	}
 }
 
 @(test)
 test_tuplehash :: proc(t: ^testing.T) {
-	tc.log(t, "Testing TupleHash(XOF)")
+	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
 
 	test_vectors := []struct {
 		sec_strength: int,
@@ -317,7 +314,7 @@ test_tuplehash :: proc(t: ^testing.T) {
 		}
 
 		for e in v.tuple {
-			data, _ := hex.decode(transmute([]byte)(e))
+			data, _ := hex.decode(transmute([]byte)(e), context.temp_allocator)
 			tuplehash.write_element(&ctx, data)
 		}
 
@@ -332,24 +329,22 @@ test_tuplehash :: proc(t: ^testing.T) {
 
 		dst_str := string(hex.encode(dst, context.temp_allocator))
 
-		tc.expect(
+		testing.expectf(
 			t,
 			dst_str == v.output,
-			fmt.tprintf(
-				"TupleHash%s%d: Expected: %s for input of %v, but got %s instead",
-				suffix,
-				v.sec_strength,
-				v.output,
-				v.tuple,
-				dst_str,
-			),
+			"TupleHash%s%d: Expected: %s for input of %v, but got %s instead",
+			suffix,
+			v.sec_strength,
+			v.output,
+			v.tuple,
+			dst_str,
 		)
 	}
 }
 
 @(test)
 test_kmac :: proc(t:^testing.T) {
-	tc.log(t, "Testing KMAC")
+	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
 
 	test_vectors := []struct {
 		sec_strength: int,
@@ -410,7 +405,7 @@ test_kmac :: proc(t:^testing.T) {
 	for v in test_vectors {
 		dst := make([]byte, len(v.output) / 2, context.temp_allocator)
 
-		key, _ := hex.decode(transmute([]byte)(v.key))
+		key, _ := hex.decode(transmute([]byte)(v.key), context.temp_allocator)
 		domainsep := transmute([]byte)(v.domainsep)
 
 		ctx: kmac.Context
@@ -421,24 +416,22 @@ test_kmac :: proc(t:^testing.T) {
 			kmac.init_256(&ctx, key, domainsep)
 		}
 
-		data, _ := hex.decode(transmute([]byte)(v.msg))
+		data, _ := hex.decode(transmute([]byte)(v.msg), context.temp_allocator)
 		kmac.update(&ctx, data)
 		kmac.final(&ctx, dst)
 
 		dst_str := string(hex.encode(dst, context.temp_allocator))
 
-		tc.expect(
+		testing.expectf(
 			t,
 			dst_str == v.output,
-			fmt.tprintf(
-				"KMAC%d: Expected: %s for input of (%s, %s, %s), but got %s instead",
-				v.sec_strength,
-				v.output,
-				v.key,
-				v.domainsep,
-				v.msg,
-				dst_str,
-			),
+			"KMAC%d: Expected: %s for input of (%s, %s, %s), but got %s instead",
+			v.sec_strength,
+			v.output,
+			v.key,
+			v.domainsep,
+			v.msg,
+			dst_str,
 		)
 	}
 }

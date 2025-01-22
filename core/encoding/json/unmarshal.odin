@@ -116,7 +116,30 @@ assign_int :: proc(val: any, i: $T) -> bool {
 	case int:     dst = int    (i)
 	case uint:    dst = uint   (i)
 	case uintptr: dst = uintptr(i)
-	case: return false
+	case:
+		ti := type_info_of(v.id)
+		if _, ok := ti.variant.(runtime.Type_Info_Bit_Set); ok {
+			do_byte_swap := !reflect.bit_set_is_big_endian(v)
+			switch ti.size * 8 {
+			case 0: // no-op.
+			case 8:
+				x := (^u8)(v.data)
+				x^ = u8(i)
+			case 16:
+				x := (^u16)(v.data)
+				x^ = do_byte_swap ? intrinsics.byte_swap(u16(i)) : u16(i)
+			case 32:
+				x := (^u32)(v.data)
+				x^ = do_byte_swap ? intrinsics.byte_swap(u32(i)) : u32(i)
+			case 64:
+				x := (^u64)(v.data)
+				x^ = do_byte_swap ? intrinsics.byte_swap(u64(i)) : u64(i)
+			case:
+				panic("unknown bit_size size")
+			}
+			return true
+		}
+		return false
 	}
 	return true
 }
@@ -149,20 +172,33 @@ assign_float :: proc(val: any, f: $T) -> bool {
 
 
 @(private)
-unmarshal_string_token :: proc(p: ^Parser, val: any, str: string, ti: ^reflect.Type_Info) -> bool {
+unmarshal_string_token :: proc(p: ^Parser, val: any, str: string, ti: ^reflect.Type_Info) -> (ok: bool, err: Error) {
 	val := val
 	switch &dst in val {
 	case string:
 		dst = str
-		return true
+		return true, nil
 	case cstring:  
 		if str == "" {
-			dst = strings.clone_to_cstring("", p.allocator)
+			a_err: runtime.Allocator_Error
+			dst, a_err = strings.clone_to_cstring("", p.allocator)
+			#partial switch a_err {
+			case nil:
+				// okay
+			case .Out_Of_Memory:
+				err = .Out_Of_Memory
+			case:
+				err = .Invalid_Allocator
+			}
+			if err != nil {
+				return
+			}
 		} else {
 			// NOTE: This is valid because 'clone_string' appends a NUL terminator
 			dst = cstring(raw_data(str)) 
 		}
-		return true
+		ok = true
+		return
 	}
 	
 	#partial switch variant in ti.variant {
@@ -170,31 +206,37 @@ unmarshal_string_token :: proc(p: ^Parser, val: any, str: string, ti: ^reflect.T
 		for name, i in variant.names {
 			if name == str {
 				assign_int(val, variant.values[i])
-				return true
+				return true, nil
 			}
 		}
 		// TODO(bill): should this be an error or not?
-		return true
+		return true, nil
 		
 	case reflect.Type_Info_Integer:
-		i := strconv.parse_i128(str) or_return
+		i, pok := strconv.parse_i128(str)
+		if !pok {
+			return false, nil
+		}
 		if assign_int(val, i) {
-			return true
+			return true, nil
 		}
 		if assign_float(val, i) {
-			return true
+			return true, nil
 		}
 	case reflect.Type_Info_Float:
-		f := strconv.parse_f64(str) or_return
+		f, pok := strconv.parse_f64(str)
+		if !pok {
+			return false, nil
+		}
 		if assign_int(val, f) {
-			return true
+			return true, nil
 		}
 		if assign_float(val, f) {
-			return true
+			return true, nil
 		}
 	}
 	
-	return false
+	return false, nil
 }
 
 
@@ -281,7 +323,7 @@ unmarshal_value :: proc(p: ^Parser, v: any) -> (err: Unmarshal_Error) {
 	case .Ident:
 		advance_token(p)
 		if p.spec == .MJSON {
-			if unmarshal_string_token(p, any{v.data, ti.id}, token.text, ti) {
+			if unmarshal_string_token(p, any{v.data, ti.id}, token.text, ti) or_return {
 				return nil
 			}
 		}
@@ -289,13 +331,18 @@ unmarshal_value :: proc(p: ^Parser, v: any) -> (err: Unmarshal_Error) {
 		
 	case .String:
 		advance_token(p)
-		str := unquote_string(token, p.spec, p.allocator) or_return
-		if unmarshal_string_token(p, any{v.data, ti.id}, str, ti) {
-			return nil
+		str  := unquote_string(token, p.spec, p.allocator) or_return
+		dest := any{v.data, ti.id}
+		if !(unmarshal_string_token(p, dest, str, ti) or_return) {
+			delete(str, p.allocator)
+			return UNSUPPORTED_TYPE
 		}
-		delete(str, p.allocator)
-		return UNSUPPORTED_TYPE
 
+		switch destv in dest {
+		case string, cstring:
+		case: delete(str, p.allocator)
+		}
+		return nil
 
 	case .Open_Brace:
 		return unmarshal_object(p, v, .Close_Brace)
@@ -363,23 +410,22 @@ unmarshal_object :: proc(p: ^Parser, v: any, end_token: Token_Kind) -> (err: Unm
 	}
 
 	v := v
-	v = reflect.any_base(v)
-	ti := type_info_of(v.id)
+	ti := reflect.type_info_base(type_info_of(v.id))
 	
 	#partial switch t in ti.variant {
 	case reflect.Type_Info_Struct:
-		if t.is_raw_union {
+		if .raw_union in t.flags {
 			return UNSUPPORTED_TYPE
 		}
-	
+
+		fields := reflect.struct_fields_zipped(ti.id)
+		
 		struct_loop: for p.curr_token.kind != end_token {
-			key, _ := parse_object_key(p, p.allocator)
+			key := parse_object_key(p, p.allocator) or_return
 			defer delete(key, p.allocator)
 			
 			unmarshal_expect_token(p, .Colon)						
 			
-			fields := reflect.struct_fields_zipped(ti.id)
-
 			field_test :: #force_inline proc "contextless" (field_used: [^]byte, offset: uintptr) -> bool {
 				prev_set := field_used[offset/8] & byte(offset&7) != 0
 				field_used[offset/8] |= byte(offset&7)
@@ -387,13 +433,13 @@ unmarshal_object :: proc(p: ^Parser, v: any, end_token: Token_Kind) -> (err: Unm
 			}
 
 			field_used_bytes := (reflect.size_of_typeid(ti.id)+7)/8
-			field_used := intrinsics.alloca(field_used_bytes, 1)
+			field_used := intrinsics.alloca(field_used_bytes + 1, 1) // + 1 to not overflow on size_of 0 types.
 			intrinsics.mem_zero(field_used, field_used_bytes)
 
 			use_field_idx := -1
 			
 			for field, field_idx in fields {
-				tag_value := string(reflect.struct_tag_get(field.tag, "json"))
+				tag_value := reflect.struct_tag_get(field.tag, "json")
 				json_name, _ := json_name_from_tag_value(tag_value)
 				if key == json_name {
 					use_field_idx = field_idx
@@ -424,7 +470,7 @@ unmarshal_object :: proc(p: ^Parser, v: any, end_token: Token_Kind) -> (err: Unm
 						}
 					}
 
-					if field.name == key {
+					if field.name == key || (field.tag != "" && reflect.struct_tag_get(field.tag, "json") == key) {
 						offset = field.offset
 						type = field.type
 						found = true
@@ -475,7 +521,7 @@ unmarshal_object :: proc(p: ^Parser, v: any, end_token: Token_Kind) -> (err: Unm
 		}
 		
 	case reflect.Type_Info_Map:
-		if !reflect.is_string(t.key) {
+		if !reflect.is_string(t.key) && !reflect.is_integer(t.key) {
 			return UNSUPPORTED_TYPE
 		}
 		raw_map := (^mem.Raw_Map)(v.data)
@@ -492,25 +538,39 @@ unmarshal_object :: proc(p: ^Parser, v: any, end_token: Token_Kind) -> (err: Unm
 			key, _ := parse_object_key(p, p.allocator)
 			unmarshal_expect_token(p, .Colon)
 			
-			
+
 			mem.zero_slice(elem_backing)
 			if uerr := unmarshal_value(p, map_backing_value); uerr != nil {
 				delete(key, p.allocator)
 				return uerr
 			}
 
-			key_ptr := rawptr(&key)
+			key_ptr: rawptr
 
-			key_cstr: cstring
-			if reflect.is_cstring(t.key) {
-				key_cstr = cstring(raw_data(key))
-				key_ptr = &key_cstr
+			#partial switch tk in t.key.variant {
+				case runtime.Type_Info_String:			
+					key_ptr = rawptr(&key)
+					key_cstr: cstring
+					if reflect.is_cstring(t.key) {
+						key_cstr = cstring(raw_data(key))
+						key_ptr = &key_cstr
+					}
+				case runtime.Type_Info_Integer:
+					i, ok := strconv.parse_i128(key)
+					if !ok	{ return UNSUPPORTED_TYPE }
+					key_ptr = rawptr(&i)
+				case: return UNSUPPORTED_TYPE
 			}
-			
+
 			set_ptr := runtime.__dynamic_map_set_without_hash(raw_map, t.map_info, key_ptr, map_backing_value.data)
 			if set_ptr == nil {
 				delete(key, p.allocator)
 			} 
+
+			// there's no need to keep string value on the heap, since it was copied into map 
+			if reflect.is_integer(t.key) {
+				delete(key, p.allocator)
+			}
 			
 			if parse_comma(p) {
 				break map_loop

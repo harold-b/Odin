@@ -1,5 +1,5 @@
-//+private
-//+build linux
+#+private
+#+build linux
 package sync
 
 import "core:time"
@@ -15,7 +15,7 @@ _futex_wait :: proc "contextless" (futex: ^Futex, expected: u32) -> bool {
 		return true
 	case:
 		// TODO(flysand): More descriptive panic messages based on the vlaue of `errno`
-		_panic("futex_wait failure")
+		panic_contextless("futex_wait failure")
 	}
 }
 
@@ -34,7 +34,7 @@ _futex_wait_with_timeout :: proc "contextless" (futex: ^Futex, expected: u32, du
 	case .NONE, .EINTR, .EAGAIN:
 		return true
 	case:
-		_panic("futex_wait_with_timeout failure")
+		panic_contextless("futex_wait_with_timeout failure")
 	}
 }
 
@@ -44,19 +44,16 @@ _futex_signal :: proc "contextless" (futex: ^Futex) {
 	case .NONE:
 		return
 	case:
-		_panic("futex_wake_single failure")
+		panic_contextless("futex_wake_single failure")
 	}
 }
 
 _futex_broadcast :: proc "contextless" (futex: ^Futex)  {
-	// NOTE(flysand): This code was kinda funny and I don't want to remove it, but here I will
-	// record history of what has been in here before
-	//     FUTEX_WAKE_PRIVATE | FUTEX_WAKE
 	_, errno := linux.futex(cast(^linux.Futex) futex, linux.FUTEX_WAKE, {.PRIVATE}, max(i32))
 	#partial switch errno {
 	case .NONE:
 		return
 	case:
-		_panic("_futex_wake_all failure")
+		panic_contextless("_futex_wake_all failure")
 	}
 }

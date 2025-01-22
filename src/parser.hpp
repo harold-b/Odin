@@ -74,7 +74,6 @@ enum AstFileFlag : u32 {
 	AstFile_IsPrivatePkg = 1<<0,
 	AstFile_IsPrivateFile = 1<<1,
 
-	AstFile_IsTest    = 1<<3,
 	AstFile_IsLazy    = 1<<4,
 
 	AstFile_NoInstrumentation = 1<<5,
@@ -83,6 +82,7 @@ enum AstFileFlag : u32 {
 enum AstDelayQueueKind {
 	AstDelayQueue_Import,
 	AstDelayQueue_Expr,
+	AstDelayQueue_ForeignBlock,
 	AstDelayQueue_COUNT,
 };
 
@@ -108,7 +108,9 @@ struct AstFile {
 	String       package_name;
 
 	u64          vet_flags;
+	u64          feature_flags;
 	bool         vet_flags_set;
+	bool         feature_flags_set;
 
 	// >= 0: In Expression
 	// <  0: In Control Clause
@@ -140,6 +142,8 @@ struct AstFile {
 
 	// This is effectively a queue but does not require any multi-threading capabilities
 	Array<Ast *> delayed_decls_queues[AstDelayQueue_COUNT];
+
+	std::atomic<isize> seen_load_directive_count;
 
 #define PARSER_MAX_FIX_COUNT 6
 	isize    fix_count;
@@ -210,6 +214,8 @@ struct Parser {
 	std::atomic<isize>     file_to_process_count;
 	std::atomic<isize>     total_token_count;
 	std::atomic<isize>     total_line_count;
+
+	std::atomic<isize>     total_seen_load_directive_count;
 
 	// TODO(bill): What should this mutex be per?
 	//  * Parser
@@ -328,8 +334,10 @@ enum FieldFlag : u32 {
 	FieldFlag_by_ptr    = 1<<8,
 	FieldFlag_no_broadcast = 1<<9, // disallow array programming
 
+	FieldFlag_no_capture  = 1<<11,
+
 	// Internal use by the parser only
-	FieldFlag_Tags      = 1<<10,
+	FieldFlag_Tags      = 1<<15,
 	FieldFlag_Results   = 1<<16,
 
 
@@ -337,7 +345,10 @@ enum FieldFlag : u32 {
 	FieldFlag_Invalid   = 1u<<31,
 
 	// Parameter List Restrictions
-	FieldFlag_Signature = FieldFlag_ellipsis|FieldFlag_using|FieldFlag_no_alias|FieldFlag_c_vararg|FieldFlag_const|FieldFlag_any_int|FieldFlag_by_ptr|FieldFlag_no_broadcast,
+	FieldFlag_Signature = FieldFlag_ellipsis|FieldFlag_using|FieldFlag_no_alias|FieldFlag_c_vararg|
+	                      FieldFlag_const|FieldFlag_any_int|FieldFlag_by_ptr|FieldFlag_no_broadcast|
+	                      FieldFlag_no_capture,
+
 	FieldFlag_Struct    = FieldFlag_using|FieldFlag_subtype|FieldFlag_Tags,
 };
 
@@ -458,6 +469,7 @@ AST_KIND(_ExprBegin,  "",  bool) \
 		bool         optional_ok_one; \
 		bool         was_selector; \
 		AstSplitArgs *split_args; \
+		Entity *entity_procedure_of; \
 	}) \
 	AST_KIND(FieldValue,      "field value",              struct { Token eq; Ast *field, *value; }) \
 	AST_KIND(EnumFieldValue,  "enum field value",         struct { \
@@ -551,6 +563,7 @@ AST_KIND(_ComplexStmtBegin, "", bool) \
 	AST_KIND(UnrollRangeStmt, "#unroll range statement", struct { \
 		Scope *scope; \
 		Token unroll_token; \
+		Slice<Ast *> args; \
 		Token for_token; \
 		Ast *val0; \
 		Ast *val1; \
@@ -631,7 +644,8 @@ AST_KIND(_DeclBegin,      "", bool) \
 	}) \
 	AST_KIND(ForeignImportDecl, "foreign import declaration", struct { \
 		Token    token;           \
-		Slice<Token> filepaths;   \
+		Slice<Ast *> filepaths;   \
+		bool multiple_filepaths;  \
 		Token    library_name;    \
 		String   collection_name; \
 		Slice<String> fullpaths;  \
@@ -725,7 +739,8 @@ AST_KIND(_TypeBegin, "", bool) \
 		isize field_count;          \
 		Ast *polymorphic_params;    \
 		Ast *align;                 \
-		Ast *field_align;           \
+		Ast *min_field_align;       \
+		Ast *max_field_align;       \
 		Token where_token;          \
 		Slice<Ast *> where_clauses; \
 		bool is_packed;             \
@@ -868,13 +883,14 @@ gb_internal gb_inline bool is_ast_when_stmt(Ast *node) {
 	return node->kind == Ast_WhenStmt;
 }
 
-gb_global gb_thread_local Arena global_thread_local_ast_arena = {};
-
 gb_internal gb_inline gbAllocator ast_allocator(AstFile *f) {
-	return arena_allocator(&global_thread_local_ast_arena);
+	return permanent_allocator();
 }
 
 gb_internal Ast *alloc_ast_node(AstFile *f, AstKind kind);
 
 gb_internal gbString expr_to_string(Ast *expression);
 gb_internal bool allow_field_separator(AstFile *f);
+
+
+gb_internal void parse_enforce_tabs(AstFile *f);

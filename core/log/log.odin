@@ -67,9 +67,7 @@ Logger :: struct {
 */
 Logger :: runtime.Logger
 
-nil_logger_proc :: proc(data: rawptr, level: Level, text: string, options: Options, location := #caller_location) {
-	// Do nothing
-}
+nil_logger_proc :: runtime.default_logger_proc
 
 nil_logger :: proc() -> Logger {
 	return Logger{nil_logger_proc, nil, Level.Debug, nil}
@@ -117,7 +115,7 @@ panicf :: proc(fmt_str: string, args: ..any, location := #caller_location) -> ! 
 }
 
 @(disabled=ODIN_DISABLE_ASSERT)
-assert :: proc(condition: bool, message := "", loc := #caller_location) {
+assert :: proc(condition: bool, message := #caller_expression(condition), loc := #caller_location) {
 	if !condition {
 		@(cold)
 		internal :: proc(message: string, loc: runtime.Source_Code_Location) {
@@ -147,7 +145,38 @@ assertf :: proc(condition: bool, fmt_str: string, args: ..any, loc := #caller_lo
 			}
 			message := fmt.tprintf(fmt_str, ..args)
 			log(.Fatal, message, location=loc)
-			p("Runtime assertion", message, loc)
+			p("runtime assertion", message, loc)
+		}
+		internal(loc, fmt_str, ..args)
+	}
+}
+
+ensure :: proc(condition: bool, message := #caller_expression(condition), loc := #caller_location) {
+	if !condition {
+		@(cold)
+		internal :: proc(message: string, loc: runtime.Source_Code_Location) {
+			p := context.assertion_failure_proc
+			if p == nil {
+				p = runtime.default_assertion_failure_proc
+			}
+			log(.Fatal, message, location=loc)
+			p("unsatisfied ensure", message, loc)
+		}
+		internal(message, loc)
+	}
+}
+
+ensuref :: proc(condition: bool, fmt_str: string, args: ..any, loc := #caller_location) {
+	if !condition {
+		@(cold)
+		internal :: proc(loc: runtime.Source_Code_Location, fmt_str: string, args: ..any) {
+			p := context.assertion_failure_proc
+			if p == nil {
+				p = runtime.default_assertion_failure_proc
+			}
+			message := fmt.tprintf(fmt_str, ..args)
+			log(.Fatal, message, location=loc)
+			p("unsatisfied ensure", message, loc)
 		}
 		internal(loc, fmt_str, ..args)
 	}
@@ -157,24 +186,26 @@ assertf :: proc(condition: bool, fmt_str: string, args: ..any, loc := #caller_lo
 
 log :: proc(level: Level, args: ..any, sep := " ", location := #caller_location) {
 	logger := context.logger
-	if logger.procedure == nil {
+	if logger.procedure == nil || logger.procedure == nil_logger_proc {
 		return
 	}
 	if level < logger.lowest_level {
 		return
 	}
+	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
 	str := fmt.tprint(..args, sep=sep) //NOTE(Hoej): While tprint isn't thread-safe, no logging is.
 	logger.procedure(logger.data, level, str, logger.options, location)
 }
 
 logf :: proc(level: Level, fmt_str: string, args: ..any, location := #caller_location) {
 	logger := context.logger
-	if logger.procedure == nil {
+	if logger.procedure == nil || logger.procedure == nil_logger_proc {
 		return
 	}
 	if level < logger.lowest_level {
 		return
 	}
+	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
 	str := fmt.tprintf(fmt_str, ..args)
 	logger.procedure(logger.data, level, str, logger.options, location)
 }

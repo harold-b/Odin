@@ -1,5 +1,5 @@
-//+private file
-//+build linux, darwin
+#+private file
+#+build linux, darwin
 package debug_trace
 
 import "base:intrinsics"
@@ -78,7 +78,7 @@ _Context :: struct {
 
 @(private="package")
 _init :: proc(ctx: ^Context) -> (ok: bool) {
-	defer if !ok do destroy(ctx)
+	defer if !ok { destroy(ctx) }
 
 	ctx.impl.state = backtrace_create_state("odin-debug-trace", 1, nil, ctx)
 	return ctx.impl.state != nil

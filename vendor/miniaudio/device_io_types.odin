@@ -351,8 +351,11 @@ device_id :: struct #raw_union {
 	nullbackend: c.int,                 /* The null backend uses an integer for device IDs. */
 }
 
+data_format_flag :: enum c.int {
+	EXCLUSIVE_MODE = 1, /* If set, this is supported in exclusive mode. Otherwise not natively supported by exclusive mode. */
+}
 
-DATA_FORMAT_FLAG_EXCLUSIVE_MODE :: 1 << 1    /* If set, this is supported in exclusive mode. Otherwise not natively supported by exclusive mode. */
+data_format_flags :: bit_set[data_format_flag; u32]
 
 MAX_DEVICE_NAME_LENGTH :: 255
 
@@ -364,10 +367,10 @@ device_info :: struct {
 
 	nativeDataFormatCount: u32,
 	nativeDataFormats: [/*len(format_count) * standard_sample_rate.rate_count * MAX_CHANNELS*/ 64]struct { /* Not sure how big to make this. There can be *many* permutations for virtual devices which can support anything. */
-		format:     format, /* Sample format. If set to ma_format_unknown, all sample formats are supported. */
-		channels:   u32,    /* If set to 0, all channels are supported. */
-		sampleRate: u32,    /* If set to 0, all sample rates are supported. */
-		flags:      u32,    /* A combination of MA_DATA_FORMAT_FLAG_* flags. */
+		format:     format,            /* Sample format. If set to ma_format_unknown, all sample formats are supported. */
+		channels:   u32,               /* If set to 0, all channels are supported. */
+		sampleRate: u32,               /* If set to 0, all sample rates are supported. */
+		flags:      data_format_flags, /* A combination of MA_DATA_FORMAT_FLAG_* flags. */
 	},  
 }
 
@@ -381,7 +384,7 @@ device_config :: struct {
 	noPreSilencedOutputBuffer:  b8,   /* When set to true, the contents of the output buffer passed into the data callback will be left undefined rather than initialized to zero. */
 	noClip:                     b8,   /* When set to true, the contents of the output buffer passed into the data callback will not be clipped after returning. Only applies when the playback sample format is f32. */
 	noDisableDenormals:         b8,   /* Do not disable denormals when firing the data callback. */
-  	noFixedSizedCallback:       b8,   /* Disables strict fixed-sized data callbacks. Setting this to true will result in the period size being treated only as a hint to the backend. This is an optimization for those who don't need fixed sized callbacks. */
+	noFixedSizedCallback:       b8,   /* Disables strict fixed-sized data callbacks. Setting this to true will result in the period size being treated only as a hint to the backend. This is an optimization for those who don't need fixed sized callbacks. */
 	dataCallback:               device_data_proc,
 	notificationCallback:       device_notification_proc,
 	stopCallback:               stop_proc,
@@ -813,7 +816,7 @@ context_type :: struct {
 			/*pa_mainloop**/ pMainLoop:     rawptr,
 			/*pa_context**/  pPulseContext: rawptr,
 			pApplicationName:               cstring, /* Set when the context is initialized. Used by devices for their local pa_context objects. */
-      pServerName:                    cstring, /* Set when the context is initialized. Used by devices for their local pa_context objects. */
+			pServerName:                    cstring, /* Set when the context is initialized. Used by devices for their local pa_context objects. */
 		} when SUPPORT_PULSEAUDIO else struct {}),
 		
 		jack: (struct {
@@ -1140,7 +1143,7 @@ device :: struct {
 
 		pulse: (struct {
 			/*pa_mainloop**/ pMainLoop: rawptr,
-    	/*pa_context**/ pPulseContext: rawptr,
+			/*pa_context**/ pPulseContext: rawptr,
 			/*pa_stream**/ pStreamPlayback: rawptr,
 			/*pa_stream**/ pStreamCapture: rawptr,
 		} when SUPPORT_PULSEAUDIO else struct {}),

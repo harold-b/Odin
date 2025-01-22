@@ -3,7 +3,7 @@ package glfw_bindings
 import "core:c"
 import vk "vendor:vulkan"
 
-GLFW_SHARED :: #config(GLFW_SHARED, false)
+GLFW_SHARED :: #config(GLFW_SHARED, ODIN_OS != .Windows && ODIN_OS != .Darwin)
 
 when ODIN_OS == .Windows {
 	when GLFW_SHARED {
@@ -38,7 +38,17 @@ when ODIN_OS == .Windows {
 		}
 	}
 } else {
-	foreign import glfw "system:glfw"
+	when GLFW_SHARED {
+		foreign import glfw "system:glfw"
+	} else {
+		@(private)
+		LIBGLFW3 :: "../lib/libglfw3.a"
+		when !#exists(LIBGLFW3) {
+			#panic("Could not find the static glfw library, add it at \"" + ODIN_ROOT + "vendor/glfw/lib/\"`")
+		}
+
+		foreign import glfw { LIBGLFW3 }
+	}
 }
 
 #assert(size_of(c.int) == size_of(b32))
@@ -61,6 +71,7 @@ foreign glfw {
 	GetPrimaryMonitor      :: proc() -> MonitorHandle ---
 	GetMonitors            :: proc(count: ^c.int) -> [^]MonitorHandle ---
 	GetMonitorPos          :: proc(monitor: MonitorHandle, xpos, ypos: ^c.int) ---
+	GetMonitorWorkarea     :: proc(monitor: MonitorHandle, xpos, ypos, width, height: ^c.int) ---
 	GetMonitorPhysicalSize :: proc(monitor: MonitorHandle, widthMM, heightMM: ^c.int) ---
 	GetMonitorContentScale :: proc(monitor: MonitorHandle, xscale, yscale: ^f32) ---
 
@@ -197,7 +208,12 @@ foreign glfw {
 
 	SetErrorCallback :: proc(cbfun: ErrorProc) -> ErrorProc ---
 
+	// Functions added in 3.4, Linux links against system glfw so we define these as weak to be able
+	// to check at runtime if they are available.
+
+	@(linkage="weak")
 	GetPlatform       :: proc() -> c.int ---
+	@(linkage="weak")
 	PlatformSupported :: proc(platform: c.int) -> b32 ---
 }
 

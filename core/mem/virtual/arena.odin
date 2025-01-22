@@ -49,6 +49,10 @@ arena_init_growing :: proc(arena: ^Arena, reserved: uint = DEFAULT_ARENA_GROWING
 	arena.curr_block     = memory_block_alloc(0, reserved, {}) or_return
 	arena.total_used     = 0
 	arena.total_reserved = arena.curr_block.reserved
+
+	if arena.minimum_block_size == 0 {
+		arena.minimum_block_size = reserved
+	}
 	return
 }
 
@@ -200,8 +204,9 @@ arena_free_all :: proc(arena: ^Arena, loc := #caller_location) {
 		}
 		// Zero the first block's memory
 		if arena.curr_block != nil {
-			mem.zero(arena.curr_block.base, int(arena.curr_block.used))
+			curr_block_used := int(arena.curr_block.used)
 			arena.curr_block.used = 0
+			mem.zero(arena.curr_block.base, curr_block_used)
 		}
 		arena.total_used = 0
 	case .Static, .Buffer:
@@ -397,9 +402,10 @@ arena_temp_end :: proc(temp: Arena_Temp, loc := #caller_location) {
 
 		if block := arena.curr_block; block != nil {
 			assert(block.used >= temp.used, "out of order use of arena_temp_end", loc)
-			amount_to_zero := min(block.used-temp.used, block.reserved-block.used)
+			amount_to_zero := block.used-temp.used
 			mem.zero_slice(block.base[temp.used:][:amount_to_zero])
 			block.used = temp.used
+			arena.total_used -= amount_to_zero
 		}
 	}
 

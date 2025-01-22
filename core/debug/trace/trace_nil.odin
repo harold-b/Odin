@@ -1,5 +1,9 @@
-//+build !windows !linux !darwin
+#+build !windows
+#+build !linux
+#+build !darwin
 package debug_trace
+
+import "base:runtime"
 
 _Context :: struct {
 }
@@ -10,9 +14,9 @@ _init :: proc(ctx: ^Context) -> (ok: bool) {
 _destroy :: proc(ctx: ^Context) -> bool {
 	return true
 }
-_frames :: proc(ctx: ^Context, skip: uint, allocator: runtime.Allocator) -> []Frame {
+_frames :: proc(ctx: ^Context, skip: uint, frames_buffer: []Frame) -> []Frame {
 	return nil
 }
-_resolve :: proc(ctx: ^Context, frame: Frame, allocator: runtime.Allocator) -> (result: runtime.Source_Code_Location) {
+_resolve :: proc(ctx: ^Context, frame: Frame, allocator: runtime.Allocator) -> (result: Frame_Location) {
 	return
 }

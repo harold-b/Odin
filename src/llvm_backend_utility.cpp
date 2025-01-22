@@ -124,8 +124,16 @@ gb_internal void lb_mem_zero_ptr(lbProcedure *p, LLVMValueRef ptr, Type *type, u
 	switch (kind) {
 	case LLVMStructTypeKind:
 	case LLVMArrayTypeKind:
-		// NOTE(bill): Enforce zeroing through memset to make sure padding is zeroed too
-		lb_mem_zero_ptr_internal(p, ptr, lb_const_int(p->module, t_int, sz).value, alignment, false);
+		if (is_type_tuple(type)) {
+			// NOTE(bill): even though this should be safe, to keep ASAN happy, do not zero the implicit padding at the end
+			GB_ASSERT(type->kind == Type_Tuple);
+			i64 n = type->Tuple.variables.count-1;
+			i64 end_offset = type->Tuple.offsets[n] + type_size_of(type->Tuple.variables[n]->type);
+			lb_mem_zero_ptr_internal(p, ptr, lb_const_int(p->module, t_int, end_offset).value, alignment, false);
+		} else {
+			// NOTE(bill): Enforce zeroing through memset to make sure padding is zeroed too
+			lb_mem_zero_ptr_internal(p, ptr, lb_const_int(p->module, t_int, sz).value, alignment, false);
+		}
 		break;
 	default:
 		LLVMBuildStore(p->builder, LLVMConstNull(lb_type(p->module, type)), ptr);
@@ -263,13 +271,13 @@ gb_internal lbValue lb_emit_transmute(lbProcedure *p, lbValue value, Type *t) {
 	if (is_type_simd_vector(src) && is_type_simd_vector(dst)) {
 		res.value = LLVMBuildBitCast(p->builder, value.value, lb_type(p->module, t), "");
 		return res;
-	} else if (is_type_array_like(src) && is_type_simd_vector(dst)) {
+	} else if (is_type_array_like(src) && (is_type_simd_vector(dst) || is_type_integer_128bit(dst))) {
 		unsigned align = cast(unsigned)gb_max(type_align_of(src), type_align_of(dst));
 		lbValue ptr = lb_address_from_load_or_generate_local(p, value);
 		if (lb_try_update_alignment(ptr, align)) {
 			LLVMTypeRef result_type = lb_type(p->module, t);
 			res.value = LLVMBuildPointerCast(p->builder, ptr.value, LLVMPointerType(result_type, 0), "");
-			res.value = LLVMBuildLoad2(p->builder, result_type, res.value, "");
+			res.value = OdinLLVMBuildLoad(p, result_type, res.value);
 			return res;
 		}
 		lbAddr addr = lb_add_local_generated(p, t, false);
@@ -328,6 +336,7 @@ gb_internal lbValue lb_soa_zip(lbProcedure *p, AstCallExpr *ce, TypeAndValue con
 	lbAddr res = lb_add_local_generated(p, tv.type, true);
 	for_array(i, slices) {
 		lbValue src = lb_slice_elem(p, slices[i]);
+		src = lb_emit_conv(p, src, alloc_type_pointer_to_multi_pointer(src.type));
 		lbValue dst = lb_emit_struct_ep(p, res.addr, cast(i32)i);
 		lb_emit_store(p, dst, src);
 	}
@@ -467,8 +476,8 @@ gb_internal lbValue lb_emit_or_else(lbProcedure *p, Ast *arg, Ast *else_expr, Ty
 	}
 }
 
-gb_internal void lb_build_return_stmt(lbProcedure *p, Slice<Ast *> const &return_results);
-gb_internal void lb_build_return_stmt_internal(lbProcedure *p, lbValue res);
+gb_internal void lb_build_return_stmt(lbProcedure *p, Slice<Ast *> const &return_results, TokenPos pos);
+gb_internal void lb_build_return_stmt_internal(lbProcedure *p, lbValue res, TokenPos pos);
 
 gb_internal lbValue lb_emit_or_return(lbProcedure *p, Ast *arg, TypeAndValue const &tv) {
 	lbValue lhs = {};
@@ -497,10 +506,10 @@ gb_internal lbValue lb_emit_or_return(lbProcedure *p, Ast *arg, TypeAndValue con
 			lbValue found = map_must_get(&p->module->values, end_entity);
 			lb_emit_store(p, found, rhs);
 
-			lb_build_return_stmt(p, {});
+			lb_build_return_stmt(p, {}, ast_token(arg).pos);
 		} else {
 			GB_ASSERT(tuple->variables.count == 1);
-			lb_build_return_stmt_internal(p, rhs);
+			lb_build_return_stmt_internal(p, rhs, ast_token(arg).pos);
 		}
 	}
 	lb_start_block(p, continue_block);
@@ -1002,6 +1011,21 @@ gb_internal i32 lb_convert_struct_index(lbModule *m, Type *t, i32 index) {
 }
 
 gb_internal LLVMTypeRef lb_type_padding_filler(lbModule *m, i64 padding, i64 padding_align) {
+	MUTEX_GUARD(&m->pad_types_mutex);
+	if (padding % padding_align == 0) {
+		for (auto pd : m->pad_types) {
+			if (pd.padding == padding && pd.padding_align == padding_align) {
+				return pd.type;
+			}
+		}
+	} else {
+		for (auto pd : m->pad_types) {
+			if (pd.padding == padding && pd.padding_align == 1) {
+				return pd.type;
+			}
+		}
+	}
+
 	// NOTE(bill): limit to `[N x u64]` to prevent ABI issues
 	padding_align = gb_clamp(padding_align, 1, 8);
 	if (padding % padding_align == 0) {
@@ -1015,13 +1039,19 @@ gb_internal LLVMTypeRef lb_type_padding_filler(lbModule *m, i64 padding, i64 pad
 		}
 		
 		GB_ASSERT_MSG(elem != nullptr, "Invalid lb_type_padding_filler padding and padding_align: %lld", padding_align);
+
+		LLVMTypeRef type = nullptr;
 		if (len != 1) {
-			return llvm_array_type(elem, len);
+			type = llvm_array_type(elem, len);
 		} else {
-			return elem;
+			type = elem;
 		}
+		array_add(&m->pad_types, lbPadType{padding, padding_align, type});
+		return type;
 	} else {
-		return llvm_array_type(lb_type(m, t_u8), padding);
+		LLVMTypeRef type = llvm_array_type(lb_type(m, t_u8), padding);
+		array_add(&m->pad_types, lbPadType{padding, 1, type});
+		return type;
 	}
 }
 
@@ -1101,10 +1131,6 @@ gb_internal lbValue lb_emit_struct_ep(lbProcedure *p, lbValue s, i32 index) {
 	Type *t = base_type(type_deref(s.type));
 	Type *result_type = nullptr;
 
-	if (is_type_relative_pointer(t)) {
-		s = lb_addr_get_ptr(p, lb_addr(s));
-	}
-
 	if (is_type_struct(t)) {
 		result_type = get_struct_field_type(t, index);
 	} else if (is_type_union(t)) {
@@ -1174,9 +1200,22 @@ gb_internal lbValue lb_emit_struct_ep(lbProcedure *p, lbValue s, i32 index) {
 	lbValue gep = lb_emit_struct_ep_internal(p, s, index, result_type);
 
 	Type *bt = base_type(t);
-	if (bt->kind == Type_Struct && bt->Struct.is_packed) {
-		lb_set_metadata_custom_u64(p->module, gep.value, ODIN_METADATA_IS_PACKED, 1);
-		GB_ASSERT(lb_get_metadata_custom_u64(p->module, gep.value, ODIN_METADATA_IS_PACKED) == 1);
+	if (bt->kind == Type_Struct) {
+		if (bt->Struct.is_packed) {
+			lb_set_metadata_custom_u64(p->module, gep.value, ODIN_METADATA_IS_PACKED, 1);
+			GB_ASSERT(lb_get_metadata_custom_u64(p->module, gep.value, ODIN_METADATA_IS_PACKED) == 1);
+		}
+		u64 align_max = bt->Struct.custom_max_field_align;
+		u64 align_min = bt->Struct.custom_min_field_align;
+		GB_ASSERT(align_min == 0 || align_max == 0 || align_min <= align_max);
+		if (align_max) {
+			lb_set_metadata_custom_u64(p->module, gep.value, ODIN_METADATA_MAX_ALIGN, align_max);
+			GB_ASSERT(lb_get_metadata_custom_u64(p->module, gep.value, ODIN_METADATA_MAX_ALIGN) == align_max);
+		}
+		if (align_min) {
+			lb_set_metadata_custom_u64(p->module, gep.value, ODIN_METADATA_MIN_ALIGN, align_min);
+			GB_ASSERT(lb_get_metadata_custom_u64(p->module, gep.value, ODIN_METADATA_MIN_ALIGN) == align_min);
+		}
 	}
 
 	return gep;
@@ -1364,6 +1403,8 @@ gb_internal lbValue lb_emit_deep_field_gep(lbProcedure *p, lbValue e, Selection 
 			} else {
 				e = lb_emit_ptr_offset(p, lb_emit_load(p, arr), index);
 			}
+			e.type = alloc_type_multi_pointer_to_pointer(e.type);
+
 		} else if (is_type_quaternion(type)) {
 			e = lb_emit_struct_ep(p, e, index);
 		} else if (is_type_raw_union(type)) {
@@ -1407,8 +1448,6 @@ gb_internal lbValue lb_emit_deep_field_gep(lbProcedure *p, lbValue e, Selection 
 		} else if (type->kind == Type_Array) {
 			e = lb_emit_array_epi(p, e, index);
 		} else if (type->kind == Type_Map) {
-			e = lb_emit_struct_ep(p, e, index);
-		} else if (type->kind == Type_RelativePointer) {
 			e = lb_emit_struct_ep(p, e, index);
 		} else {
 			GB_PANIC("un-gep-able type %s", type_to_string(type));
@@ -1559,19 +1598,26 @@ gb_internal lbValue lb_emit_matrix_ev(lbProcedure *p, lbValue s, isize row, isiz
 	return lb_emit_load(p, ptr);
 }
 
-
 gb_internal void lb_fill_slice(lbProcedure *p, lbAddr const &slice, lbValue base_elem, lbValue len) {
 	Type *t = lb_addr_type(slice);
 	GB_ASSERT(is_type_slice(t));
 	lbValue ptr = lb_addr_get_ptr(p, slice);
-	lb_emit_store(p, lb_emit_struct_ep(p, ptr, 0), base_elem);
+	lbValue data = lb_emit_struct_ep(p, ptr, 0);
+	if (are_types_identical(type_deref(base_elem.type, true), type_deref(type_deref(data.type), true))) {
+		base_elem = lb_emit_conv(p, base_elem, type_deref(data.type));
+	}
+	lb_emit_store(p, data, base_elem);
 	lb_emit_store(p, lb_emit_struct_ep(p, ptr, 1), len);
 }
 gb_internal void lb_fill_string(lbProcedure *p, lbAddr const &string, lbValue base_elem, lbValue len) {
 	Type *t = lb_addr_type(string);
 	GB_ASSERT(is_type_string(t));
 	lbValue ptr = lb_addr_get_ptr(p, string);
-	lb_emit_store(p, lb_emit_struct_ep(p, ptr, 0), base_elem);
+	lbValue data = lb_emit_struct_ep(p, ptr, 0);
+	if (are_types_identical(type_deref(base_elem.type, true), type_deref(type_deref(data.type), true))) {
+		base_elem = lb_emit_conv(p, base_elem, type_deref(data.type));
+	}
+	lb_emit_store(p, data, base_elem);
 	lb_emit_store(p, lb_emit_struct_ep(p, ptr, 1), len);
 }
 
@@ -2008,7 +2054,7 @@ gb_internal LLVMValueRef llvm_get_inline_asm(LLVMTypeRef func_type, String const
 }
 
 
-gb_internal void lb_set_wasm_import_attributes(LLVMValueRef value, Entity *entity, String import_name) {
+gb_internal void lb_set_wasm_procedure_import_attributes(LLVMValueRef value, Entity *entity, String import_name) {
 	if (!is_arch_wasm()) {
 		return;
 	}
@@ -2019,7 +2065,11 @@ gb_internal void lb_set_wasm_import_attributes(LLVMValueRef value, Entity *entit
 		GB_ASSERT(foreign_library->LibraryName.paths.count == 1);
 		
 		module_name = foreign_library->LibraryName.paths[0];
-		
+
+		if (string_ends_with(module_name, str_lit(".o"))) {
+			return;
+		}
+
 		if (string_starts_with(import_name, module_name)) {
 			import_name = substring(import_name, module_name.len+WASM_MODULE_NAME_SEPARATOR.len, import_name.len);
 		}
@@ -2215,8 +2265,8 @@ gb_internal LLVMAtomicOrdering llvm_atomic_ordering_from_odin(ExactValue const &
 	GB_ASSERT(value.kind == ExactValue_Integer);
 	i64 v = exact_value_to_i64(value);
 	switch (v) {
-	case OdinAtomicMemoryOrder_relaxed: return LLVMAtomicOrderingUnordered;
-	case OdinAtomicMemoryOrder_consume: return LLVMAtomicOrderingMonotonic;
+	case OdinAtomicMemoryOrder_relaxed: return LLVMAtomicOrderingMonotonic;
+	case OdinAtomicMemoryOrder_consume: return LLVMAtomicOrderingAcquire;
 	case OdinAtomicMemoryOrder_acquire: return LLVMAtomicOrderingAcquire;
 	case OdinAtomicMemoryOrder_release: return LLVMAtomicOrderingRelease;
 	case OdinAtomicMemoryOrder_acq_rel: return LLVMAtomicOrderingAcquireRelease;

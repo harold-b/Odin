@@ -46,6 +46,25 @@ gb_internal LLVMMetadataRef lb_debug_end_location_from_ast(lbProcedure *p, Ast *
 	return lb_debug_location_from_token_pos(p, ast_end_token(node).pos);
 }
 
+gb_internal void lb_debug_file_line(lbModule *m, Ast *node, LLVMMetadataRef *file, unsigned *line) {
+	if (*file == nullptr) {
+		if (node) {
+			*file = lb_get_llvm_metadata(m, node->file());
+			*line = cast(unsigned)ast_token(node).pos.line;
+		}
+	}
+}
+
+gb_internal LLVMMetadataRef lb_debug_procedure_parameters(lbModule *m, Type *type) {
+	if (is_type_proc(type)) {
+		return lb_debug_type(m, t_rawptr);
+	}
+	if (type->kind == Type_Tuple && type->Tuple.variables.count == 1) {
+		return lb_debug_procedure_parameters(m, type->Tuple.variables[0]->type);
+	}
+	return lb_debug_type(m, type);
+}
+
 gb_internal LLVMMetadataRef lb_debug_type_internal_proc(lbModule *m, Type *type) {
 	i64 size = type_size_of(type); // Check size
 	gb_unused(size);
@@ -63,13 +82,36 @@ gb_internal LLVMMetadataRef lb_debug_type_internal_proc(lbModule *m, Type *type)
 			parameter_count += 1;
 		}
 	}
-	LLVMMetadataRef *parameters = gb_alloc_array(permanent_allocator(), LLVMMetadataRef, parameter_count);
 
-	unsigned param_index = 0;
-	if (type->Proc.result_count == 0) {
-		parameters[param_index++] = nullptr;
-	} else {
-		parameters[param_index++] = lb_debug_type(m, type->Proc.results);
+	auto parameters = array_make<LLVMMetadataRef>(permanent_allocator(), 0, type->Proc.param_count+type->Proc.result_count+2);
+
+	array_add(&parameters, cast(LLVMMetadataRef)nullptr);
+
+	bool return_is_tuple = false;
+	if (type->Proc.result_count != 0) {
+		Type *single_ret = reduce_tuple_to_single_type(type->Proc.results);
+		if (is_type_proc(single_ret)) {
+			single_ret = t_rawptr;
+		}
+		if (is_type_tuple(single_ret) && is_calling_convention_odin(type->Proc.calling_convention)) {
+			LLVMTypeRef actual = lb_type_internal_for_procedures_raw(m, type);
+			actual = LLVMGetReturnType(actual);
+			if (actual == nullptr) {
+				// results were passed as a single pointer
+				parameters[0] = lb_debug_procedure_parameters(m, single_ret);
+			} else {
+				LLVMTypeRef possible = lb_type(m, type->Proc.results);
+				if (possible == actual) {
+					// results were returned directly
+					parameters[0] = lb_debug_procedure_parameters(m, single_ret);
+				} else {
+					// resulsts were returned separately
+					return_is_tuple = true;
+				}
+			}
+		} else {
+			parameters[0] = lb_debug_procedure_parameters(m, single_ret);
+		}
 	}
 
 	LLVMMetadataRef file = nullptr;
@@ -79,8 +121,22 @@ gb_internal LLVMMetadataRef lb_debug_type_internal_proc(lbModule *m, Type *type)
 		if (e->kind != Entity_Variable) {
 			continue;
 		}
-		parameters[param_index] = lb_debug_type(m, e->type);
-		param_index += 1;
+		array_add(&parameters, lb_debug_procedure_parameters(m, e->type));
+	}
+
+
+	if (return_is_tuple) {
+		Type *results = type->Proc.results;
+		GB_ASSERT(results != nullptr && results->kind == Type_Tuple);
+		isize count = results->Tuple.variables.count;
+		parameters[0] = lb_debug_procedure_parameters(m, results->Tuple.variables[count-1]->type);
+		for (isize i = 0; i < count-1; i++) {
+			array_add(&parameters, lb_debug_procedure_parameters(m, results->Tuple.variables[i]->type));
+		}
+	}
+
+	if (type->Proc.calling_convention == ProcCC_Odin) {
+		array_add(&parameters, lb_debug_type(m, t_context_ptr));
 	}
 
 	LLVMDIFlags flags = LLVMDIFlagZero;
@@ -88,7 +144,7 @@ gb_internal LLVMMetadataRef lb_debug_type_internal_proc(lbModule *m, Type *type)
 		flags = LLVMDIFlagNoReturn;
 	}
 
-	return LLVMDIBuilderCreateSubroutineType(m->debug_builder, file, parameters, parameter_count, flags);
+	return LLVMDIBuilderCreateSubroutineType(m->debug_builder, file, parameters.data, cast(unsigned)parameters.count, flags);
 }
 
 gb_internal LLVMMetadataRef lb_debug_struct_field(lbModule *m, String const &name, Type *type, u64 offset_in_bits) {
@@ -116,6 +172,8 @@ gb_internal LLVMMetadataRef lb_debug_basic_struct(lbModule *m, String const &nam
 
 gb_internal LLVMMetadataRef lb_debug_struct(lbModule *m, Type *type, Type *bt, String name, LLVMMetadataRef scope, LLVMMetadataRef file, unsigned line) {
 	GB_ASSERT(bt->kind == Type_Struct);
+
+	lb_debug_file_line(m, bt->Struct.node, &file, &line);
 
 	unsigned tag = DW_TAG_structure_type;
 	if (is_type_raw_union(bt)) {
@@ -336,6 +394,8 @@ gb_internal LLVMMetadataRef lb_debug_union(lbModule *m, Type *type, String name,
 	Type *bt = base_type(type);
 	GB_ASSERT(bt->kind == Type_Union);
 
+	lb_debug_file_line(m, bt->Union.node, &file, &line);
+
 	u64 size_in_bits = 8*type_size_of(bt);
 	u32 align_in_bits = 8*cast(u32)type_align_of(bt);
 
@@ -348,13 +408,18 @@ gb_internal LLVMMetadataRef lb_debug_union(lbModule *m, Type *type, String name,
 	lb_set_llvm_metadata(m, type, temp_forward_decl);
 
 	isize index_offset = 1;
+	isize variant_offset = 1;
 	if (is_type_union_maybe_pointer(bt)) {
 		index_offset = 0;
+		variant_offset = 0;
+	} else if (bt->Union.kind == UnionType_no_nil) {
+		variant_offset = 0;
 	}
 
 	LLVMMetadataRef member_scope = lb_get_llvm_metadata(m, bt->Union.scope);
 	unsigned element_count = cast(unsigned)bt->Union.variants.count;
 	if (index_offset > 0) {
+		GB_ASSERT(index_offset == 1);
 		element_count += 1;
 	}
 
@@ -377,13 +442,11 @@ gb_internal LLVMMetadataRef lb_debug_union(lbModule *m, Type *type, String name,
 	for_array(j, bt->Union.variants) {
 		Type *variant = bt->Union.variants[j];
 
-		unsigned field_index = cast(unsigned)(index_offset+j);
-
-		char name[16] = {};
-		gb_snprintf(name, gb_size_of(name), "v%u", field_index);
+		char name[32] = {};
+		gb_snprintf(name, gb_size_of(name), "v%td", variant_offset+j);
 		isize name_len = gb_strlen(name);
 
-		elements[field_index] = LLVMDIBuilderCreateMemberType(
+		elements[index_offset+j] = LLVMDIBuilderCreateMemberType(
 			m->debug_builder, member_scope,
 			name, name_len,
 			file, line,
@@ -414,6 +477,8 @@ gb_internal LLVMMetadataRef lb_debug_union(lbModule *m, Type *type, String name,
 gb_internal LLVMMetadataRef lb_debug_bitset(lbModule *m, Type *type, String name, LLVMMetadataRef scope, LLVMMetadataRef file, unsigned line) {
 	Type *bt = base_type(type);
 	GB_ASSERT(bt->kind == Type_BitSet);
+
+	lb_debug_file_line(m, bt->BitSet.node, &file, &line);
 
 	u64 size_in_bits = 8*type_size_of(bt);
 	u32 align_in_bits = 8*cast(u32)type_align_of(bt);
@@ -490,9 +555,53 @@ gb_internal LLVMMetadataRef lb_debug_bitset(lbModule *m, Type *type, String name
 	return final_decl;
 }
 
+gb_internal LLVMMetadataRef lb_debug_bitfield(lbModule *m, Type *type, String name, LLVMMetadataRef scope, LLVMMetadataRef file, unsigned line) {
+	Type *bt = base_type(type);
+	GB_ASSERT(bt->kind == Type_BitField);
+
+	lb_debug_file_line(m, bt->BitField.node, &file, &line);
+
+	u64 size_in_bits = 8*type_size_of(bt);
+	u32 align_in_bits = 8*cast(u32)type_align_of(bt);
+
+    unsigned element_count = cast(unsigned)bt->BitField.fields.count;
+    LLVMMetadataRef *elements = gb_alloc_array(permanent_allocator(), LLVMMetadataRef, element_count);
+
+    u64 offset_in_bits = 0;
+    for (unsigned i = 0; i < element_count; i++) {
+        Entity *f = bt->BitField.fields[i];
+        u8 bit_size = bt->BitField.bit_sizes[i];
+        GB_ASSERT(f->kind == Entity_Variable);
+        String name = f->token.string;
+        elements[i] = LLVMDIBuilderCreateBitFieldMemberType(m->debug_builder, scope, cast(char const *)name.text, name.len, file, line,
+            bit_size, offset_in_bits, 0,
+            LLVMDIFlagZero, lb_debug_type(m, f->type)
+        );
+
+        offset_in_bits += bit_size;
+    }
+
+	LLVMMetadataRef final_decl = LLVMDIBuilderCreateStructType(
+		m->debug_builder, scope,
+		cast(char const *)name.text, cast(size_t)name.len,
+		file, line,
+		size_in_bits, align_in_bits,
+		LLVMDIFlagZero,
+		nullptr,
+		elements, element_count,
+		0,
+		nullptr,
+		"", 0
+	);
+	lb_set_llvm_metadata(m, type, final_decl);
+	return final_decl;
+}
+
 gb_internal LLVMMetadataRef lb_debug_enum(lbModule *m, Type *type, String name, LLVMMetadataRef scope, LLVMMetadataRef file, unsigned line) {
 	Type *bt = base_type(type);
 	GB_ASSERT(bt->kind == Type_Enum);
+
+	lb_debug_file_line(m, bt->Enum.node, &file, &line);
 
 	u64 size_in_bits = 8*type_size_of(bt);
 	u32 align_in_bits = 8*cast(u32)type_align_of(bt);
@@ -609,50 +718,50 @@ gb_internal LLVMMetadataRef lb_debug_type_internal(lbModule *m, Type *type) {
 		case Basic_complex32:
 			{
 				LLVMMetadataRef elements[2] = {};
-				elements[0] = lb_debug_struct_field(m, str_lit("real"), t_f16, 0);
-				elements[1] = lb_debug_struct_field(m, str_lit("imag"), t_f16, 4);
+				elements[0] = lb_debug_struct_field(m, str_lit("real"), t_f16, 0*16);
+				elements[1] = lb_debug_struct_field(m, str_lit("imag"), t_f16, 1*16);
 				return lb_debug_basic_struct(m, str_lit("complex32"), 64, 32, elements, gb_count_of(elements));
 			}
 		case Basic_complex64:
 			{
 				LLVMMetadataRef elements[2] = {};
-				elements[0] = lb_debug_struct_field(m, str_lit("real"), t_f32, 0);
-				elements[1] = lb_debug_struct_field(m, str_lit("imag"), t_f32, 4);
+				elements[0] = lb_debug_struct_field(m, str_lit("real"), t_f32, 0*32);
+				elements[1] = lb_debug_struct_field(m, str_lit("imag"), t_f32, 2*32);
 				return lb_debug_basic_struct(m, str_lit("complex64"), 64, 32, elements, gb_count_of(elements));
 			}
 		case Basic_complex128:
 			{
 				LLVMMetadataRef elements[2] = {};
-				elements[0] = lb_debug_struct_field(m, str_lit("real"), t_f64, 0);
-				elements[1] = lb_debug_struct_field(m, str_lit("imag"), t_f64, 8);
+				elements[0] = lb_debug_struct_field(m, str_lit("real"), t_f64, 0*64);
+				elements[1] = lb_debug_struct_field(m, str_lit("imag"), t_f64, 1*64);
 				return lb_debug_basic_struct(m, str_lit("complex128"), 128, 64, elements, gb_count_of(elements));
 			}
 
 		case Basic_quaternion64:
 			{
 				LLVMMetadataRef elements[4] = {};
-				elements[0] = lb_debug_struct_field(m, str_lit("imag"), t_f16, 0);
-				elements[1] = lb_debug_struct_field(m, str_lit("jmag"), t_f16, 4);
-				elements[2] = lb_debug_struct_field(m, str_lit("kmag"), t_f16, 8);
-				elements[3] = lb_debug_struct_field(m, str_lit("real"), t_f16, 12);
+				elements[0] = lb_debug_struct_field(m, str_lit("imag"), t_f16, 0*16);
+				elements[1] = lb_debug_struct_field(m, str_lit("jmag"), t_f16, 1*16);
+				elements[2] = lb_debug_struct_field(m, str_lit("kmag"), t_f16, 2*16);
+				elements[3] = lb_debug_struct_field(m, str_lit("real"), t_f16, 3*16);
 				return lb_debug_basic_struct(m, str_lit("quaternion64"), 128, 32, elements, gb_count_of(elements));
 			}
 		case Basic_quaternion128:
 			{
 				LLVMMetadataRef elements[4] = {};
-				elements[0] = lb_debug_struct_field(m, str_lit("imag"), t_f32, 0);
-				elements[1] = lb_debug_struct_field(m, str_lit("jmag"), t_f32, 4);
-				elements[2] = lb_debug_struct_field(m, str_lit("kmag"), t_f32, 8);
-				elements[3] = lb_debug_struct_field(m, str_lit("real"), t_f32, 12);
+				elements[0] = lb_debug_struct_field(m, str_lit("imag"), t_f32, 0*32);
+				elements[1] = lb_debug_struct_field(m, str_lit("jmag"), t_f32, 1*32);
+				elements[2] = lb_debug_struct_field(m, str_lit("kmag"), t_f32, 2*32);
+				elements[3] = lb_debug_struct_field(m, str_lit("real"), t_f32, 3*32);
 				return lb_debug_basic_struct(m, str_lit("quaternion128"), 128, 32, elements, gb_count_of(elements));
 			}
 		case Basic_quaternion256:
 			{
 				LLVMMetadataRef elements[4] = {};
-				elements[0] = lb_debug_struct_field(m, str_lit("imag"), t_f64, 0);
-				elements[1] = lb_debug_struct_field(m, str_lit("jmag"), t_f64, 8);
-				elements[2] = lb_debug_struct_field(m, str_lit("kmag"), t_f64, 16);
-				elements[3] = lb_debug_struct_field(m, str_lit("real"), t_f64, 24);
+				elements[0] = lb_debug_struct_field(m, str_lit("imag"), t_f64, 0*64);
+				elements[1] = lb_debug_struct_field(m, str_lit("jmag"), t_f64, 1*64);
+				elements[2] = lb_debug_struct_field(m, str_lit("kmag"), t_f64, 2*64);
+				elements[3] = lb_debug_struct_field(m, str_lit("real"), t_f64, 3*64);
 				return lb_debug_basic_struct(m, str_lit("quaternion256"), 256, 32, elements, gb_count_of(elements));
 			}
 
@@ -752,6 +861,7 @@ gb_internal LLVMMetadataRef lb_debug_type_internal(lbModule *m, Type *type) {
 	case Type_Union:        return lb_debug_union(        m, type,       make_string_c(type_to_string(type, temporary_allocator())), nullptr, nullptr, 0);
 	case Type_BitSet:       return lb_debug_bitset(       m, type,       make_string_c(type_to_string(type, temporary_allocator())), nullptr, nullptr, 0);
 	case Type_Enum:         return lb_debug_enum(         m, type,       make_string_c(type_to_string(type, temporary_allocator())), nullptr, nullptr, 0);
+	case Type_BitField:     return lb_debug_bitfield(     m, type,       make_string_c(type_to_string(type, temporary_allocator())), nullptr, nullptr, 0);
 
 	case Type_Tuple:
 		if (type->Tuple.variables.count == 1) {
@@ -813,17 +923,6 @@ gb_internal LLVMMetadataRef lb_debug_type_internal(lbModule *m, Type *type) {
 				elem, subscripts, gb_count_of(subscripts));
 		}
 
-	case Type_RelativePointer: {
-		LLVMMetadataRef base_integer = lb_debug_type(m, type->RelativePointer.base_integer);
-		gbString name = type_to_string(type, temporary_allocator());
-		return LLVMDIBuilderCreateTypedef(m->debug_builder, base_integer, name, gb_string_length(name), nullptr, 0, nullptr, cast(u32)(8*type_align_of(type)));
-	}
-	case Type_RelativeMultiPointer: {
-		LLVMMetadataRef base_integer = lb_debug_type(m, type->RelativeMultiPointer.base_integer);
-		gbString name = type_to_string(type, temporary_allocator());
-		return LLVMDIBuilderCreateTypedef(m->debug_builder, base_integer, name, gb_string_length(name), nullptr, 0, nullptr, cast(u32)(8*type_align_of(type)));
-	}
-
 	case Type_Matrix: {
 		LLVMMetadataRef subscripts[1] = {};
 		subscripts[0] = LLVMDIBuilderGetOrCreateSubrange(m->debug_builder,
@@ -836,42 +935,6 @@ gb_internal LLVMMetadataRef lb_debug_type_internal(lbModule *m, Type *type) {
 			8*cast(unsigned)type_align_of(type),
 			lb_debug_type(m, type->Matrix.elem),
 			subscripts, gb_count_of(subscripts));
-	}
-
-	case Type_BitField: {
-		LLVMMetadataRef parent_scope = nullptr;
-		LLVMMetadataRef scope = nullptr;
-		LLVMMetadataRef file = nullptr;
-		unsigned line = 0;
-		u64 size_in_bits = 8*cast(u64)type_size_of(type);
-		u32 align_in_bits = 8*cast(u32)type_align_of(type);
-		LLVMDIFlags flags = LLVMDIFlagZero;
-
-		unsigned element_count = cast(unsigned)type->BitField.fields.count;
-		LLVMMetadataRef *elements = gb_alloc_array(permanent_allocator(), LLVMMetadataRef, element_count);
-
-		u64 offset_in_bits = 0;
-		for (unsigned i = 0; i < element_count; i++) {
-			Entity *f = type->BitField.fields[i];
-			u8 bit_size = type->BitField.bit_sizes[i];
-			GB_ASSERT(f->kind == Entity_Variable);
-			String name = f->token.string;
-			unsigned field_line = 0;
-			LLVMDIFlags field_flags = LLVMDIFlagZero;
-			elements[i] = LLVMDIBuilderCreateBitFieldMemberType(m->debug_builder, scope, cast(char const *)name.text, name.len, file, field_line,
-				bit_size, offset_in_bits, offset_in_bits,
-				field_flags, lb_debug_type(m, f->type)
-			);
-
-			offset_in_bits += bit_size;
-		}
-
-
-		return LLVMDIBuilderCreateStructType(m->debug_builder, parent_scope, "", 0, file, line,
-			size_in_bits, align_in_bits, flags,
-			nullptr, elements, element_count, 0, nullptr,
-			"", 0
-		);
 	}
 	}
 
@@ -952,12 +1015,13 @@ gb_internal LLVMMetadataRef lb_debug_type(lbModule *m, Type *type) {
 			return lb_debug_struct(m, type, bt, name, scope, file, line);
 		}
 
-		case Type_Struct:       return lb_debug_struct(m, type, base_type(type), name, scope, file, line);
+		case Type_Struct:       return lb_debug_struct(m, type, bt, name, scope, file, line);
 		case Type_Slice:        return lb_debug_slice(m, type, name, scope, file, line);
 		case Type_DynamicArray: return lb_debug_dynamic_array(m, type, name, scope, file, line);
 		case Type_Union:        return lb_debug_union(m, type, name, scope, file, line);
 		case Type_BitSet:       return lb_debug_bitset(m, type, name, scope, file, line);
 		case Type_Enum:         return lb_debug_enum(m, type, name, scope, file, line);
+		case Type_BitField:     return lb_debug_bitfield(m, type, name, scope, file, line);
 		}
 	}
 
@@ -1170,6 +1234,7 @@ gb_internal void add_debug_info_for_global_constant_from_entity(lbGenerator *gen
 	if (USE_SEPARATE_MODULES) {
 		m = lb_module_of_entity(gen, e);
 	}
+	GB_ASSERT(m != nullptr);
 
 	if (is_type_integer(e->type)) {
 		ExactValue const &value = e->Constant.value;

@@ -34,7 +34,7 @@ Finds the integer value of the given rune
 
 **Returns**   The integer value of the given rune
 */
-_digit_value :: proc(r: rune) -> int {
+_digit_value :: proc "contextless" (r: rune) -> int {
 	ri := int(r)
 	v: int = 16
 	switch r {
@@ -227,8 +227,8 @@ Output:
 - value: The parsed uint64 value
 - ok: A boolean indicating whether the parsing was successful
 */
-parse_u64_of_base :: proc(str: string, base: int, n: ^int = nil) -> (value: u64, ok: bool) {
-	assert(base <= 16, "base must be 1-16")
+parse_u64_of_base :: proc "contextless" (str: string, base: int, n: ^int = nil) -> (value: u64, ok: bool) {
+	assert_contextless(base <= 16, "base must be 1-16")
 	s := str
 	defer if n != nil { n^ = len(str)-len(s) }
 	if s == "" {

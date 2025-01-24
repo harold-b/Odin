@@ -1044,7 +1044,7 @@ gb_internal AstPackage *get_package_of_type(Type *type) {
 }
 
 
-// NOTE(bill): 'content_name' is for debugging and error messages
+// NOTE(bill): 'context_name' is for debugging and error messages
 gb_internal void check_assignment(CheckerContext *c, Operand *operand, Type *type, String context_name) {
 	check_not_tuple(c, operand);
 	if (operand->mode == Addressing_Invalid) {
@@ -1973,10 +1973,10 @@ gb_internal bool check_binary_op(CheckerContext *c, Operand *o, Token op) {
 	case Token_Quo:
 	case Token_QuoEq:
 		if (is_type_matrix(main_type)) {
-			error(op, "Operator '%.*s' is only allowed with matrix types", LIT(op.string));
+			error(op, "Operator '%.*s' is not allowed with matrix types", LIT(op.string));
 			return false;
 		} else if (is_type_simd_vector(main_type) && is_type_integer(type)) {
-			error(op, "Operator '%.*s' is only allowed with #simd types with integer elements", LIT(op.string));
+			error(op, "Operator '%.*s' is not allowed with #simd types with integer elements", LIT(op.string));
 			return false;
 		}
 		/*fallthrough*/
@@ -2023,14 +2023,14 @@ gb_internal bool check_binary_op(CheckerContext *c, Operand *o, Token op) {
 	case Token_ModEq:
 	case Token_ModModEq:
 		if (is_type_matrix(main_type)) {
-			error(op, "Operator '%.*s' is only allowed with matrix types", LIT(op.string));
+			error(op, "Operator '%.*s' is not allowed with matrix types", LIT(op.string));
 			return false;
 		}
 		if (!is_type_integer(type)) {
 			error(op, "Operator '%.*s' is only allowed with integers", LIT(op.string));
 			return false;
 		} else if (is_type_simd_vector(main_type)) {
-			error(op, "Operator '%.*s' is only allowed with #simd types with integer elements", LIT(op.string));
+			error(op, "Operator '%.*s' is not allowed with #simd types with integer elements", LIT(op.string));
 			return false;
 		}
 		break;

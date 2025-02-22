@@ -3004,7 +3004,16 @@ gb_internal lbValue lb_emit_comp(lbProcedure *p, TokenKind op_kind, lbValue left
 
 		LLVMTypeRef mask_int_type = LLVMIntTypeInContext(p->module->ctx, cast(unsigned)(8*type_size_of(a)));
 		LLVMValueRef mask_int = LLVMBuildBitCast(p->builder, mask, mask_int_type, "");
-		res.value = LLVMBuildICmp(p->builder, LLVMIntNE, mask_int, LLVMConstNull(LLVMTypeOf(mask_int)), "");
+
+		switch (op_kind) {
+		case Token_CmpEq:
+			res.value = LLVMBuildICmp(p->builder, LLVMIntEQ, mask_int, LLVMConstInt(mask_int_type, U64_MAX, true), "");
+			break;
+		case Token_NotEq:
+			res.value = LLVMBuildICmp(p->builder, LLVMIntNE, mask_int, LLVMConstNull(mask_int_type), "");
+			break;
+		}
+
 		return res;
 
 	} else {
@@ -3364,9 +3373,7 @@ gb_internal lbValue lb_build_unary_and(lbProcedure *p, Ast *expr) {
 					auto args = array_make<lbValue>(permanent_allocator(), arg_count);
 					args[0] = ok;
 
-					args[1] = lb_find_or_add_entity_string(p->module, get_file_path_string(pos.file_id));
-					args[2] = lb_const_int(p->module, t_i32, pos.line);
-					args[3] = lb_const_int(p->module, t_i32, pos.column);
+					lb_set_file_line_col(p, array_slice(args, 1, args.count), pos);
 
 					if (!build_context.no_rtti) {
 						args[4] = lb_typeid(p->module, src_type);
@@ -3393,9 +3400,7 @@ gb_internal lbValue lb_build_unary_and(lbProcedure *p, Ast *expr) {
 					auto args = array_make<lbValue>(permanent_allocator(), 6);
 					args[0] = ok;
 
-					args[1] = lb_find_or_add_entity_string(p->module, get_file_path_string(pos.file_id));
-					args[2] = lb_const_int(p->module, t_i32, pos.line);
-					args[3] = lb_const_int(p->module, t_i32, pos.column);
+					lb_set_file_line_col(p, array_slice(args, 1, args.count), pos);
 
 					args[4] = any_id;
 					args[5] = id;
@@ -4294,6 +4299,17 @@ gb_internal lbAddr lb_build_addr_index_expr(lbProcedure *p, Ast *expr) {
 gb_internal lbAddr lb_build_addr_slice_expr(lbProcedure *p, Ast *expr) {
 	ast_node(se, SliceExpr, expr);
 
+	lbAddr addr = lb_build_addr(p, se->expr);
+	lbValue base = lb_addr_load(p, addr);
+	Type *type = base_type(base.type);
+
+	if (is_type_pointer(type)) {
+		type = base_type(type_deref(type));
+		addr = lb_addr(base);
+		base = lb_addr_load(p, addr);
+	}
+
+
 	lbValue low  = lb_const_int(p->module, t_int, 0);
 	lbValue high = {};
 
@@ -4305,16 +4321,6 @@ gb_internal lbAddr lb_build_addr_slice_expr(lbProcedure *p, Ast *expr) {
 	}
 
 	bool no_indices = se->low == nullptr && se->high == nullptr;
-
-	lbAddr addr = lb_build_addr(p, se->expr);
-	lbValue base = lb_addr_load(p, addr);
-	Type *type = base_type(base.type);
-
-	if (is_type_pointer(type)) {
-		type = base_type(type_deref(type));
-		addr = lb_addr(base);
-		base = lb_addr_load(p, addr);
-	}
 
 	switch (type->kind) {
 	case Type_Slice: {

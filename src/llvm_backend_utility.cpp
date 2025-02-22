@@ -771,9 +771,7 @@ gb_internal lbValue lb_emit_union_cast(lbProcedure *p, lbValue value, Type *type
 			auto args = array_make<lbValue>(permanent_allocator(), arg_count);
 			args[0] = ok;
 
-			args[1] = lb_const_string(m, get_file_path_string(pos.file_id));
-			args[2] = lb_const_int(m, t_i32, pos.line);
-			args[3] = lb_const_int(m, t_i32, pos.column);
+			lb_set_file_line_col(p, array_slice(args, 1, args.count), pos);
 
 			if (!build_context.no_rtti) {
 				args[4] = lb_typeid(m, src_type);
@@ -847,9 +845,7 @@ gb_internal lbAddr lb_emit_any_cast_addr(lbProcedure *p, lbValue value, Type *ty
 			auto args = array_make<lbValue>(permanent_allocator(), arg_count);
 			args[0] = ok;
 
-			args[1] = lb_const_string(m, get_file_path_string(pos.file_id));
-			args[2] = lb_const_int(m, t_i32, pos.line);
-			args[3] = lb_const_int(m, t_i32, pos.column);
+			lb_set_file_line_col(p, array_slice(args, 1, args.count), pos);
 
 			if (!build_context.no_rtti) {
 				args[4] = any_typeid;
@@ -975,6 +971,13 @@ gb_internal i32 lb_convert_struct_index(lbModule *m, Type *t, i32 index) {
 	if (t->kind == Type_Struct) {
 		auto field_remapping = lb_get_struct_remapping(m, t);
 		return field_remapping[index];
+	} else if (is_type_any(t) && build_context.ptr_size == 4) {
+		GB_ASSERT(t->kind == Type_Basic);
+		GB_ASSERT(t->Basic.kind == Basic_any);
+		switch (index) {
+		case 0: return 0; // data
+		case 1: return 2; // id
+		}
 	} else if (build_context.ptr_size != build_context.int_size) {
 		switch (t->kind) {
 		case Type_Basic:

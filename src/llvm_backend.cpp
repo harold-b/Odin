@@ -24,7 +24,7 @@
 #include "llvm_backend_stmt.cpp"
 #include "llvm_backend_proc.cpp"
 
-String get_default_microarchitecture() {
+gb_internal String get_default_microarchitecture() {
 	String default_march = str_lit("generic");
 	if (build_context.metrics.arch == TargetArch_amd64) {
 		// NOTE(bill): x86-64-v2 is more than enough for everyone
@@ -47,7 +47,7 @@ String get_default_microarchitecture() {
 	return default_march;
 }
 
-String get_final_microarchitecture() {
+gb_internal String get_final_microarchitecture() {
 	BuildContext *bc = &build_context;
 
 	String microarch = bc->microarch;
@@ -169,11 +169,17 @@ gb_internal void lb_correct_entity_linkage(lbGenerator *gen) {
 			other_global = LLVMGetNamedGlobal(ec.other_module->mod, ec.cname);
 			if (other_global) {
 				LLVMSetLinkage(other_global, LLVMWeakAnyLinkage);
+				if (!ec.e->Variable.is_export) {
+					LLVMSetVisibility(other_global, LLVMHiddenVisibility);
+				}
 			}
 		} else if (ec.e->kind == Entity_Procedure) {
 			other_global = LLVMGetNamedFunction(ec.other_module->mod, ec.cname);
 			if (other_global) {
 				LLVMSetLinkage(other_global, LLVMWeakAnyLinkage);
+				if (!ec.e->Procedure.is_export) {
+					LLVMSetVisibility(other_global, LLVMHiddenVisibility);
+				}
 			}
 		}
 	}
@@ -3148,7 +3154,10 @@ gb_internal bool lb_generate_code(lbGenerator *gen) {
 		lbModule *m = default_module;
 
 		{ // Add type info data
-			isize max_type_info_count = info->minimum_dependency_type_info_set.count+1;
+			// GB_ASSERT_MSG(info->minimum_dependency_type_info_index_map.count == info->type_info_types.count, "%tu vs %tu", info->minimum_dependency_type_info_index_map.count, info->type_info_types.count);
+
+			// isize max_type_info_count = info->minimum_dependency_type_info_index_map.count+1;
+			isize max_type_info_count = info->type_info_types_hash_map.count;
 			Type *t = alloc_type_array(t_type_info_ptr, max_type_info_count);
 
 			// IMPORTANT NOTE(bill): As LLVM does not have a union type, an array of unions cannot be initialized
@@ -3176,7 +3185,8 @@ gb_internal bool lb_generate_code(lbGenerator *gen) {
 			isize count = 0;
 			isize offsets_extra = 0;
 
-			for (Type *t : m->info->type_info_types) {
+			for (auto const &tt : m->info->type_info_types) {
+				Type *t = tt.type;
 				isize index = lb_type_info_index(m->info, t, false);
 				if (index < 0) {
 					continue;

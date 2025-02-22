@@ -50,9 +50,12 @@ init_dns_configuration :: proc() {
 	dns_configuration.hosts_file,  _ = replace_environment_path(dns_configuration.hosts_file)
 }
 
+@(fini, private)
 destroy_dns_configuration :: proc() {
 	delete(dns_configuration.resolv_conf)
+	dns_configuration.resolv_conf = ""
 	delete(dns_configuration.hosts_file)
+	dns_configuration.hosts_file = ""
 }
 
 dns_configuration := DEFAULT_DNS_CONFIGURATION
@@ -132,7 +135,14 @@ resolve_ip4 :: proc(hostname_and_maybe_port: string) -> (ep4: Endpoint, err: Net
 			return
 		}
 	case Host:
-		recs, _ := get_dns_records_from_os(t.hostname, .IP4, context.temp_allocator)
+		recs: []DNS_Record
+
+		if ODIN_OS != .Windows && strings.has_suffix(t.hostname, ".local") {
+			recs, _ = get_dns_records_from_nameservers(t.hostname, .IP4, {IP4_mDNS_Broadcast}, nil, context.temp_allocator)
+		} else {
+			recs, _ = get_dns_records_from_os(t.hostname, .IP4, context.temp_allocator)
+		}
+
 		if len(recs) == 0 {
 			err = .Unable_To_Resolve
 			return
@@ -159,7 +169,14 @@ resolve_ip6 :: proc(hostname_and_maybe_port: string) -> (ep6: Endpoint, err: Net
 			return t, nil
 		}
 	case Host:
-		recs, _ := get_dns_records_from_os(t.hostname, .IP6, context.temp_allocator)
+		recs: []DNS_Record
+
+		if ODIN_OS != .Windows && strings.has_suffix(t.hostname, ".local") {
+			recs, _ = get_dns_records_from_nameservers(t.hostname, .IP6, {IP6_mDNS_Broadcast}, nil, context.temp_allocator)
+		} else {
+			recs, _ = get_dns_records_from_os(t.hostname, .IP6, context.temp_allocator)
+		}
+
 		if len(recs) == 0 {
 			err = .Unable_To_Resolve
 			return
@@ -255,12 +272,6 @@ get_dns_records_from_nameservers :: proc(hostname: string, type: DNS_Record_Type
 			return nil, .Connection_Error
 		}
 
-		// recv_sz, _, recv_err := recv_udp(conn, dns_response_buf[:])
-		// if recv_err == UDP_Recv_Error.Timeout {
-		// 	continue
-		// } else if recv_err != nil {
-		// 	continue
-		// }
 		recv_sz, _ := recv_udp(conn, dns_response_buf[:]) or_continue
 		if recv_sz == 0 {
 			continue
@@ -525,18 +536,21 @@ decode_hostname :: proc(packet: []u8, start_idx: int, allocator := context.alloc
 			return
 		}
 
-		if packet[cur_idx] > 63 && packet[cur_idx] != 0xC0 {
-			return
-		}
+		switch {
 
-		switch packet[cur_idx] {
-
-		// This is a offset to more data in the packet, jump to it
-		case 0xC0:
+		// A pointer is when the two higher bits are set.
+		case packet[cur_idx] & 0xC0 == 0xC0:
+			if len(packet[cur_idx:]) < 2 {
+				return
+			}
 			pkt := packet[cur_idx:cur_idx+2]
 			val := (^u16be)(raw_data(pkt))^
 			offset := int(val & 0x3FFF)
-			if offset > len(packet) {
+			// RFC 9267 a ptr should only point backwards, enough to avoid infinity.
+			// "The offset at which this octet is located must be smaller than the offset
+			// at which the compression pointer is located". Still keep iteration_max to
+			// avoid tiny jumps.
+			if offset > len(packet) || offset >= cur_idx {
 				return
 			}
 
@@ -546,6 +560,10 @@ decode_hostname :: proc(packet: []u8, start_idx: int, allocator := context.alloc
 				out_size += 2
 				level += 1
 			}
+
+		// Validate label len
+		case packet[cur_idx] > LABEL_MAX:
+			return
 
 		// This is a label, insert it into the hostname
 		case:

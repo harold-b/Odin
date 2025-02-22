@@ -345,7 +345,7 @@ gb_internal void check_scope_decls(CheckerContext *c, Slice<Ast *> const &nodes,
 	check_collect_entities(c, nodes);
 
 	for (auto const &entry : s->elements) {
-		Entity *e = entry.value;
+		Entity *e = entry.value;\
 		switch (e->kind) {
 		case Entity_Constant:
 		case Entity_TypeName:
@@ -3649,7 +3649,8 @@ gb_internal bool check_transmute(CheckerContext *c, Ast *node, Operand *o, Type 
 				gb_string_free(oper_str);
 				gb_string_free(to_type);
 			} else if (is_type_integer(src_t) && is_type_integer(dst_t) &&
-			           types_have_same_internal_endian(src_t, dst_t)) {
+			           types_have_same_internal_endian(src_t, dst_t) &&
+			           type_endian_kind_of(src_t) == type_endian_kind_of(dst_t)) {
 				gbString oper_type = type_to_string(src_t);
 				gbString to_type   = type_to_string(dst_t);
 				error(o->expr, "Use of 'transmute' where 'cast' would be preferred since both are integers of the same endianness, from '%s' to '%s'", oper_type, to_type);
@@ -5507,6 +5508,11 @@ gb_internal Entity *check_selector(CheckerContext *c, Operand *operand, Ast *nod
 			case Addressing_SoaVariable:
 			case Addressing_SwizzleVariable:
 				operand->mode = Addressing_SwizzleVariable;
+				break;
+			case Addressing_Value:
+				if (is_type_pointer(original_type)) {
+					operand->mode = Addressing_SwizzleVariable;
+				}
 				break;
 			}
 
@@ -10375,7 +10381,7 @@ gb_internal ExprKind check_type_assertion(CheckerContext *c, Operand *o, Ast *no
 				add_type_info_type(c, o->type);
 				o->type = type_hint;
 				o->mode = Addressing_OptionalOk;
-				return kind;
+				goto end;
 			}
 		}
 
@@ -10439,6 +10445,8 @@ gb_internal ExprKind check_type_assertion(CheckerContext *c, Operand *o, Ast *no
 			return kind;
 		}
 	}
+
+end:;
 
 	if ((c->state_flags & StateFlag_no_type_assert) == 0) {
 		add_package_dependency(c, "runtime", "type_assertion_check");

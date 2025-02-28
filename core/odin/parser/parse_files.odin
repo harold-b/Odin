@@ -7,6 +7,7 @@ import "core:fmt"
 import "core:os"
 import "core:slice"
 import "core:strings"
+import "core:mem"
 
 collect_package :: proc(path: string) -> (pkg: ^ast.Package, success: bool) {
 	NO_POS :: tokenizer.Pos{}
@@ -18,7 +19,12 @@ collect_package :: proc(path: string) -> (pkg: ^ast.Package, success: bool) {
 
 	path_pattern := fmt.tprintf("%s/*.odin", pkg_path)
 	matches, err := filepath.glob(path_pattern)
-	defer delete(matches)
+	defer {
+		for m in matches {
+			delete(m)
+		}
+		delete(matches)
+	}
 
 	if err != nil {
 		return
@@ -27,11 +33,44 @@ collect_package :: proc(path: string) -> (pkg: ^ast.Package, success: bool) {
 	pkg = ast.new(ast.Package, NO_POS, NO_POS)
 	pkg.fullpath = pkg_path
 
-	for match in matches {
+	// NOTE(harold): Matches can be appended to, so we do a standard for loop
+	for i := 0; i < len(matches); i+=1 {
+		match := matches[i]
 		src: []byte
 		fullpath, ok := filepath.abs(match)
 		if !ok {
 			return
+		}
+
+		// Directories that end in .odin have their files flattened into the current package
+		if os.is_dir(fullpath) {
+			defer delete(fullpath)
+
+			sub_path_pattern := fmt.tprintf("%s/*.odin", fullpath)
+			sub_matches, err := filepath.glob(sub_path_pattern)
+			if err != nil {
+				return
+			}
+			defer delete(sub_matches)
+
+			if len(sub_matches) < 1 {
+				continue
+			}
+
+			old_length := len(matches)
+			new_length := len(matches) + len(sub_matches)
+			new_size   := new_length * size_of(string)
+			new_ptr, e := mem.resize(raw_data(matches), len(matches) * size_of(string), new_size, align_of(string))
+			if e != nil {
+				return
+			}
+
+			matches = slice.from_ptr(cast(^string)new_ptr, new_length)
+			for sm, i in sub_matches {
+				matches[old_length+i] = sm
+			}
+
+			continue
 		}
 
 		src, ok = os.read_entire_file(fullpath)

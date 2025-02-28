@@ -224,6 +224,41 @@ gb_internal bool path_is_directory(Path path) {
 	return path_is_directory(path_string);
 }
 
+gb_internal String path_append(gbAllocator a, String const& path, String path_to_append) {
+	if (path.len == 0) {
+		return copy_string(a, path_to_append);
+	}
+	if (path_to_append.len == 0) {
+		return copy_string(a, path);
+	}
+
+	bool can_have_backslash_separator = false;
+	#if defined(GB_SYSTEM_WINDOWS)
+		can_have_backslash_separator = true;
+	#endif
+
+	bool add_separator = true;
+
+	isize len = path.len + 1 + path_to_append.len;
+	if (path[path.len-1] == '/' || (can_have_backslash_separator && path[path.len-1] == '\\')) {
+		len -= 1;
+		add_separator = false;
+	}
+
+	u8* text = gb_alloc_array(a, u8, len+1);
+	u8* dst  = text;
+	
+	gb_memmove(dst, path.text, path.len);
+	dst += path.len;
+	if (add_separator) {
+		gb_memmove(dst, "/", 1);
+		dst += 1;
+	}
+	gb_memmove(dst, path_to_append.text, path_to_append.len);
+
+	return make_string(text, len);
+}
+
 struct FileInfo {
 	String name;
 	String fullpath;

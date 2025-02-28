@@ -160,11 +160,11 @@ struct lbModule {
 	AstFile *file;   // possibly associated
 	char const *module_name;
 
-	PtrMap<Type *, LLVMTypeRef> types;                             // mutex: types_mutex
+	PtrMap<u64/*type hash*/, LLVMTypeRef>  types;                  // mutex: types_mutex
 	PtrMap<void *, lbStructFieldRemapping> struct_field_remapping; // Key: LLVMTypeRef or Type *, mutex: types_mutex
-	PtrMap<Type *, LLVMTypeRef> func_raw_types;                    // mutex: func_raw_types_mutex
-	RecursiveMutex              types_mutex;
-	RecursiveMutex              func_raw_types_mutex;
+	PtrMap<u64/*type hash*/, LLVMTypeRef>  func_raw_types;         // mutex: func_raw_types_mutex
+	RecursiveMutex types_mutex;
+	RecursiveMutex func_raw_types_mutex;
 	i32 internal_type_level;
 
 	RwMutex values_mutex;
@@ -178,12 +178,9 @@ struct lbModule {
 
 	StringMap<LLVMValueRef> const_strings;
 
-	PtrMap<Type *, struct lbFunctionType *> function_type_map; 
+	PtrMap<u64/*type hash*/, struct lbFunctionType *> function_type_map;
 
-	PtrMap<Type *, lbProcedure *> equal_procs;
-	PtrMap<Type *, lbProcedure *> hasher_procs;
-	PtrMap<Type *, lbProcedure *> map_get_procs;
-	PtrMap<Type *, lbProcedure *> map_set_procs;
+	StringMap<lbProcedure *> gen_procs;   // key is the canonicalized name
 
 	std::atomic<u32> nested_type_name_guid;
 
@@ -204,8 +201,8 @@ struct lbModule {
 	StringMap<lbObjcRef> objc_classes;
 	StringMap<lbObjcRef> objc_selectors;
 
-	PtrMap<Type *, lbAddr> map_cell_info_map; // address of runtime.Map_Info
-	PtrMap<Type *, lbAddr> map_info_map;      // address of runtime.Map_Cell_Info
+	PtrMap<u64/*type hash*/, lbAddr> map_cell_info_map; // address of runtime.Map_Info
+	PtrMap<u64/*type hash*/, lbAddr> map_info_map;      // address of runtime.Map_Cell_Info
 
 	PtrMap<Ast *, lbAddr> exact_value_compound_literal_addr_map; // Key: Ast_CompoundLit
 
@@ -608,6 +605,9 @@ gb_internal LLVMTypeRef llvm_array_type(LLVMTypeRef ElementType, uint64_t Elemen
 	return LLVMArrayType(ElementType, cast(unsigned)ElementCount);
 #endif
 }
+
+
+gb_internal String lb_internal_gen_name_from_type(char const *prefix, Type *type);
 
 
 gb_internal void lb_set_metadata_custom_u64(lbModule *m, LLVMValueRef v_ref, String name, u64 value);

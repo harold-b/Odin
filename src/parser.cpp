@@ -5717,6 +5717,41 @@ gb_internal void parser_add_foreign_file_to_process(Parser *p, AstPackage *pkg, 
 }
 
 
+gb_internal bool import_path_readdir(Parser *p, String path, String const &rel_path, TokenPos pos, PackageKind kind, Array<FileInfo> &file_list, bool is_source_group) {
+	ReadDirectoryError rd_err = read_directory(path, &file_list);
+
+	if (file_list.count == 1) {
+		GB_ASSERT(path != file_list[0].fullpath);
+	}
+
+	switch (rd_err) {
+	case ReadDirectory_InvalidPath:
+		syntax_error(pos, "Invalid path: %.*s", LIT(rel_path));
+		return false;
+	case ReadDirectory_NotExists:
+		syntax_error(pos, "Path does not exist: %.*s", LIT(rel_path));
+		return false;
+	case ReadDirectory_Permission:
+		syntax_error(pos, "Unknown error whilst reading path %.*s", LIT(rel_path));
+		return false;
+	case ReadDirectory_NotDir:
+		syntax_error(pos, "Expected a directory for a package, got a file: %.*s", LIT(rel_path));
+		return false;
+	case ReadDirectory_Empty:
+		if (is_source_group) {
+			return true;
+		}
+
+		syntax_error(pos, "Empty directory: %.*s", LIT(rel_path));
+		return false;
+	case ReadDirectory_Unknown:
+		syntax_error(pos, "Unknown error whilst reading path %.*s", LIT(rel_path));
+		return false;
+	}
+
+	return true;
+}
+
 // NOTE(bill): Returns true if it's added
 gb_internal AstPackage *try_add_import_path(Parser *p, String path, String const &rel_path, TokenPos pos, PackageKind kind = Package_Normal) {
 	String const FILE_EXT = str_lit(".odin");
@@ -5752,47 +5787,53 @@ gb_internal AstPackage *try_add_import_path(Parser *p, String path, String const
 
 
 	Array<FileInfo> list = {};
-	ReadDirectoryError rd_err = read_directory(path, &list);
 	defer (array_free(&list));
-
-	if (list.count == 1) {
-		GB_ASSERT(path != list[0].fullpath);
-	}
-
-
-	switch (rd_err) {
-	case ReadDirectory_InvalidPath:
-		syntax_error(pos, "Invalid path: %.*s", LIT(rel_path));
-		return nullptr;
-	case ReadDirectory_NotExists:
-		syntax_error(pos, "Path does not exist: %.*s", LIT(rel_path));
-		return nullptr;
-	case ReadDirectory_Permission:
-		syntax_error(pos, "Unknown error whilst reading path %.*s", LIT(rel_path));
-		return nullptr;
-	case ReadDirectory_NotDir:
-		syntax_error(pos, "Expected a directory for a package, got a file: %.*s", LIT(rel_path));
-		return nullptr;
-	case ReadDirectory_Empty:
-		syntax_error(pos, "Empty directory: %.*s", LIT(rel_path));
-		return nullptr;
-	case ReadDirectory_Unknown:
-		syntax_error(pos, "Unknown error whilst reading path %.*s", LIT(rel_path));
+	if( !import_path_readdir(p, path, rel_path, pos, kind, list, false)) {
 		return nullptr;
 	}
 
 	isize files_with_ext = 0;
 	isize files_to_reserve = 1; // always reserve 1
-	for (FileInfo fi : list) {
+
+	// NOTE(Harold): We append to this list dynamically here, so we can't do a foreach style loop,
+	//				  as the pointers might be invalidated if the array is reallocated during append.
+	const isize top_level_file_count = list.count;
+	for (isize i = 0; i < list.count; i++) {
+		FileInfo fi = list[i];
 		String name = fi.name;
 		String ext = path_extension(name);
-		if (ext == FILE_EXT) {
-			files_with_ext += 1;
+
+		if (ext != FILE_EXT) {
+			continue;
 		}
-		if (ext == FILE_EXT && !is_excluded_target_filename(name)) {
+
+		if (fi.is_dir && i < top_level_file_count && !is_excluded_target_filename(name)) {
+			String sub_path = path_append(permanent_allocator(), path, name);
+			String sub_rel_path = path_append(temporary_allocator(), rel_path, name);
+
+			// NOTE(Harold): readdir initializes the list on its own, so we have to use a new one each time
+			Array<FileInfo> group_files = {};
+			defer (array_free(&group_files));
+		
+			if (!import_path_readdir(p, sub_path, sub_rel_path, pos, kind, group_files, true)) {
+				return nullptr;
+			}
+
+			// Append to the main list as if these files were part of the same package
+			for (FileInfo gfi : group_files) {
+				array_add(&list, gfi);
+			}
+
+			continue;
+		}
+
+		files_with_ext += 1;
+
+		if (!is_excluded_target_filename(name)) {
 			files_to_reserve += 1;
 		}
 	}
+
 	if (files_with_ext == 0 || files_to_reserve == 1) {
 		ERROR_BLOCK();
 		if (files_with_ext != 0) {
@@ -5811,7 +5852,7 @@ gb_internal AstPackage *try_add_import_path(Parser *p, String path, String const
 	for (FileInfo fi : list) {
 		String name = fi.name;
 		String ext = path_extension(name);
-		if (ext == FILE_EXT) {
+		if (ext == FILE_EXT && !fi.is_dir) {
 			if (is_excluded_target_filename(name)) {
 				continue;
 			}

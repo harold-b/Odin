@@ -3,7 +3,6 @@ package os2
 
 import "base:runtime"
 
-import "core:path/filepath"
 import "core:sync"
 import "core:sys/wasm/wasi"
 
@@ -35,11 +34,11 @@ _mkdir_all :: proc(path: string, perm: int) -> Error {
 		return .Exist
 	}
 
-	clean_path := filepath.clean(path, temp_allocator())
+	clean_path := clean_path(path, temp_allocator())
 	return internal_mkdir_all(clean_path)
 
 	internal_mkdir_all :: proc(path: string) -> Error {
-		dir, file := filepath.split(path)
+		dir, file := split_path(path)
 		if file != path && dir != "/" {
 			if len(dir) > 1 && dir[len(dir) - 1] == '/' {
 				dir = dir[:len(dir) - 1]
@@ -60,16 +59,20 @@ _remove_all :: proc(path: string) -> (err: Error) {
 		dir := open(path) or_return
 		defer close(dir)
 
-		iter := read_directory_iterator_create(dir) or_return
+		iter := read_directory_iterator_create(dir)
 		defer read_directory_iterator_destroy(&iter)
 
 		for fi in read_directory_iterator(&iter) {
+			_ = read_directory_iterator_error(&iter) or_break
+
 			if fi.type == .Directory {
 				_remove_all(fi.fullpath) or_return
 			} else {
 				remove(fi.fullpath) or_return
 			}
 		}
+
+		_ = read_directory_iterator_error(&iter) or_return
 	}
 
 	return remove(path)

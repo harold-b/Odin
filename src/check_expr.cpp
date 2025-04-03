@@ -863,6 +863,11 @@ gb_internal i64 check_distance_between_types(CheckerContext *c, Operand *operand
 			if (are_types_identical(vt, s)) {
 				return 1;
 			}
+			if (is_type_proc(vt)) {
+				if (are_types_identical(base_type(vt), src)) {
+					return 1;
+				}
+			}
 		}
 
 		if (dst->Union.variants.count == 1) {
@@ -2599,9 +2604,8 @@ gb_internal ExactValue exact_bit_set_all_set_mask(Type *type) {
 					continue;
 				}
 
-				BigInt shift_amount = f->Constant.value.value_integer;
-				big_int_sub_eq(&shift_amount, &b_lower_base);
-
+				BigInt shift_amount = {};
+				big_int_sub(&shift_amount, &f->Constant.value.value_integer, &b_lower_base);
 
 				BigInt value = {};
 				big_int_shl(&value, &one, &shift_amount);
@@ -3666,6 +3670,11 @@ gb_internal bool check_transmute(CheckerContext *c, Ast *node, Operand *o, Type 
 }
 
 gb_internal bool check_binary_array_expr(CheckerContext *c, Token op, Operand *x, Operand *y) {
+	if (is_type_array_like(x->type) || is_type_array_like(y->type)) {
+		if (op.kind == Token_CmpAnd || op.kind == Token_CmpOr) {
+			error(op, "Array programming is not allowed with the operator '%.*s'", LIT(op.string));
+		}
+	}
 	if (is_type_array(x->type) && !is_type_array(y->type)) {
 		if (check_is_assignable_to(c, y, x->type)) {
 			if (check_binary_op(c, x, op)) {
@@ -4504,8 +4513,7 @@ gb_internal void convert_to_typed(CheckerContext *c, Operand *operand, Type *tar
 		} else {
 			switch (operand->type->Basic.kind) {
 			case Basic_UntypedBool:
-				if (!is_type_boolean(target_type) &&
-				    !is_type_integer(target_type)) {
+				if (!is_type_boolean(target_type)) {
 					operand->mode = Addressing_Invalid;
 					convert_untyped_error(c, operand, target_type);
 					return;
@@ -8969,8 +8977,14 @@ gb_internal ExprKind check_or_else_expr(CheckerContext *c, Operand *o, Ast *node
 		o->expr = node;
 		return Expr_Expr;
 	}
+
+	Type *left_type = nullptr;
+	Type *right_type = nullptr;
+	check_or_else_split_types(c, &x, name, &left_type, &right_type);
+	add_type_and_value(c, arg, x.mode, x.type, x.value);
+
 	bool y_is_diverging = false;
-	check_expr_base(c, &y, default_value, x.type);
+	check_expr_base(c, &y, default_value, left_type);
 	switch (y.mode) {
 	case Addressing_NoValue:
 		if (is_diverging_expr(y.expr)) {
@@ -8994,11 +9008,6 @@ gb_internal ExprKind check_or_else_expr(CheckerContext *c, Operand *o, Ast *node
 		o->expr = node;
 		return Expr_Expr;
 	}
-
-	Type *left_type = nullptr;
-	Type *right_type = nullptr;
-	check_or_else_split_types(c, &x, name, &left_type, &right_type);
-	add_type_and_value(c, arg, x.mode, x.type, x.value);
 
 	if (left_type != nullptr) {
 		if (!y_is_diverging) {

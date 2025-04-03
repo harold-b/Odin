@@ -80,46 +80,30 @@ _lookup_env :: proc(key: string, allocator: runtime.Allocator) -> (value: string
 }
 
 @(require_results)
-_set_env :: proc(key, value: string) -> bool {
-	if err := build_env(); err != nil {
-		return false
-	}
+_set_env :: proc(key, value: string) -> (err: Error) {
+	build_env() or_return
 
 	sync.guard(&g_env_mutex)
 
-	key_ptr, value_ptr, just_inserted, err := map_entry(&g_env, key)
-	if err != nil {
-		return false
+	defer if err != nil {
+		delete_key(&g_env, key)
 	}
 
-	alloc_err: runtime.Allocator_Error
+	key_ptr, value_ptr, just_inserted := map_entry(&g_env, key) or_return
 
 	if just_inserted {
-		key_ptr^, alloc_err = clone_string(key, file_allocator())
-		if alloc_err != nil {
-			delete_key(&g_env, key)
-			return false
-		}
-
-		value_ptr^, alloc_err = clone_string(value, file_allocator())
-		if alloc_err != nil {
-			delete_key(&g_env, key)
+		key_ptr^ = clone_string(key, file_allocator()) or_return
+		defer if err != nil {
 			delete(key_ptr^, file_allocator())
-			return false
 		}
-
-		return true
+		value_ptr^ = clone_string(value, file_allocator()) or_return
+		return
 	}
 
 	delete_string_if_not_original(value_ptr^)
 
-	value_ptr^, alloc_err = clone_string(value, file_allocator())
-	if alloc_err != nil {
-		delete_key(&g_env, key)
-		return false
-	}
-
-	return true
+	value_ptr^ = clone_string(value, file_allocator()) or_return
+	return
 }
 
 @(require_results)
@@ -153,34 +137,23 @@ _clear_env :: proc() {
 }
 
 @(require_results)
-_environ :: proc(allocator: runtime.Allocator) -> []string {
-	if err := build_env(); err != nil {
-		return nil
-	}
+_environ :: proc(allocator: runtime.Allocator) -> (environ: []string, err: Error) {
+	build_env() or_return
 
 	sync.shared_guard(&g_env_mutex)
 
-	envs, alloc_err := make([]string, len(g_env), allocator)
-	if alloc_err != nil {
-		return nil
-	}
-
-	defer if alloc_err != nil {
+	envs := make([dynamic]string, 0, len(g_env), allocator) or_return
+	defer if err != nil {
 		for env in envs {
 			delete(env, allocator)
 		}
-		delete(envs, allocator)
+		delete(envs)
 	}
 
-	i: int
 	for k, v in g_env {
-		defer i += 1
-
-		envs[i], alloc_err = concatenate({k, "=", v}, allocator)
-		if alloc_err != nil {
-			return nil
-		}
+		append(&envs, concatenate({k, "=", v}, allocator) or_return)
 	}
 
-	return envs
+	environ = envs[:]
+	return
 }

@@ -143,11 +143,6 @@ struct lbPadType {
 	LLVMTypeRef type;
 };
 
-struct lbObjcRef {
-	Entity * entity;
-	lbAddr local_module_addr;
-};
-
 struct lbModule {
 	LLVMModuleRef mod;
 	LLVMContextRef ctx;
@@ -169,6 +164,8 @@ struct lbModule {
 
 	RwMutex values_mutex;
 
+	std::atomic<u32> global_array_index;
+
 	PtrMap<Entity *, lbValue> values;           
 	PtrMap<Entity *, lbAddr>  soa_values;       
 	StringMap<lbValue>  members;
@@ -181,8 +178,6 @@ struct lbModule {
 	PtrMap<u64/*type hash*/, struct lbFunctionType *> function_type_map;
 
 	StringMap<lbProcedure *> gen_procs;   // key is the canonicalized name
-
-	std::atomic<u32> nested_type_name_guid;
 
 	Array<lbProcedure *> procedures_to_generate;
 	Array<Entity *> global_procedures_to_create;
@@ -198,8 +193,9 @@ struct lbModule {
 	RecursiveMutex debug_values_mutex;
 	PtrMap<void *, LLVMMetadataRef> debug_values; 
 
-	StringMap<lbObjcRef> objc_classes;
-	StringMap<lbObjcRef> objc_selectors;
+
+	StringMap<lbAddr> objc_classes;
+	StringMap<lbAddr> objc_selectors;
 
 	PtrMap<u64/*type hash*/, lbAddr> map_cell_info_map; // address of runtime.Map_Info
 	PtrMap<u64/*type hash*/, lbAddr> map_info_map;      // address of runtime.Map_Cell_Info
@@ -218,6 +214,13 @@ struct lbEntityCorrection {
 	char const *cname;
 };
 
+struct lbObjCGlobal {
+	lbModule *module;
+	gbString  global_name;
+	String    name;
+	Type *    type;
+};
+
 struct lbGenerator : LinkerData {
 	CheckerInfo *info;
 
@@ -228,9 +231,6 @@ struct lbGenerator : LinkerData {
 	RecursiveMutex anonymous_proc_lits_mutex;
 	PtrMap<Ast *, lbProcedure *> anonymous_proc_lits; 
 
-	std::atomic<u32> global_array_index;
-	std::atomic<u32> global_generated_index;
-
 	isize used_module_count;
 
 	lbProcedure *startup_runtime;
@@ -238,6 +238,8 @@ struct lbGenerator : LinkerData {
 	lbProcedure *objc_names;
 
 	MPSCQueue<lbEntityCorrection> entities_to_correct_linkage;
+	MPSCQueue<lbObjCGlobal> objc_selectors;
+	MPSCQueue<lbObjCGlobal> objc_classes;
 };
 
 
@@ -361,6 +363,8 @@ struct lbProcedure {
 	bool             in_multi_assignment;
 	Array<LLVMValueRef> raw_input_parameters;
 
+	u32 global_generated_index;
+
 	bool             uses_branch_location;
 	TokenPos         branch_location_pos;
 	TokenPos         curr_token_pos;
@@ -470,7 +474,8 @@ gb_internal lbContextData *lb_push_context_onto_stack(lbProcedure *p, lbAddr ctx
 gb_internal lbContextData *lb_push_context_onto_stack_from_implicit_parameter(lbProcedure *p);
 
 
-gb_internal lbAddr lb_add_global_generated(lbModule *m, Type *type, lbValue value={}, Entity **entity_=nullptr);
+gb_internal lbAddr lb_add_global_generated_from_procedure(lbProcedure *p, Type *type, lbValue value={});
+gb_internal lbAddr lb_add_global_generated_with_name(lbModule *m, Type *type, lbValue value, String name, Entity **entity_=nullptr);
 gb_internal lbAddr lb_add_local(lbProcedure *p, Type *type, Entity *e=nullptr, bool zero_init=true, bool force_no_init=false);
 
 gb_internal void lb_add_foreign_library_path(lbModule *m, Entity *e);

@@ -18,17 +18,36 @@ gb_global isize lb_global_type_info_member_tags_index    = 0;
 gb_internal void lb_init_module(lbModule *m, Checker *c) {
 	m->info = &c->info;
 
-	gbString module_name = gb_string_make(heap_allocator(), "odin_package");
-	if (m->file) {
-		module_name = gb_string_append_fmt(module_name, "-%u", m->file->id+1);
+
+	String name = build_context.build_paths[BuildPath_Output].name;
+	gbString module_name = gb_string_make(heap_allocator(), "");
+	module_name = gb_string_append_length(module_name, name.text, name.len);
+
+	if (!USE_SEPARATE_MODULES) {
+		// ignore suffixes
+	} else if (m->file) {
+		if (gb_string_length(module_name)) {
+			module_name = gb_string_appendc(module_name, "-");
+		}
+		if (m->pkg) {
+			module_name = gb_string_append_length(module_name, m->pkg->name.text, m->pkg->name.len);
+			module_name = gb_string_appendc(module_name, "-");
+		}
+		String filename = filename_from_path(m->file->filename);
+		module_name = gb_string_append_length(module_name, filename.text, filename.len);
 	} else if (m->pkg) {
-		module_name = gb_string_appendc(module_name, "-");
+		if (gb_string_length(module_name)) {
+			module_name = gb_string_appendc(module_name, "-");
+		}
 		module_name = gb_string_append_length(module_name, m->pkg->name.text, m->pkg->name.len);
-	} else if (USE_SEPARATE_MODULES) {
-		module_name = gb_string_appendc(module_name, "-builtin");
+	} else {
+		if (gb_string_length(module_name)) {
+			module_name = gb_string_appendc(module_name, "-");
+		}
+		module_name = gb_string_appendc(module_name, "builtin");
 	}
 
-	m->module_name = module_name ? module_name : "odin_package";
+	m->module_name = module_name;
 	m->ctx = LLVMContextCreate();
 	m->mod = LLVMModuleCreateWithNameInContext(m->module_name, m->ctx);
 	// m->debug_builder = nullptr;
@@ -152,6 +171,8 @@ gb_internal bool lb_init_generator(lbGenerator *gen, Checker *c) {
 	}
 
 	mpsc_init(&gen->entities_to_correct_linkage, heap_allocator());
+	mpsc_init(&gen->objc_selectors, heap_allocator());
+	mpsc_init(&gen->objc_classes, heap_allocator());
 
 	return true;
 }
@@ -215,7 +236,7 @@ gb_internal void lb_loop_end(lbProcedure *p, lbLoopData const &data) {
 
 gb_internal void lb_make_global_private_const(LLVMValueRef global_data) {
 	LLVMSetLinkage(global_data, LLVMLinkerPrivateLinkage);
-	LLVMSetUnnamedAddress(global_data, LLVMGlobalUnnamedAddr);
+	// LLVMSetUnnamedAddress(global_data, LLVMGlobalUnnamedAddr);
 	LLVMSetGlobalConstant(global_data, true);
 }
 gb_internal void lb_make_global_private_const(lbAddr const &addr) {
@@ -1007,7 +1028,7 @@ gb_internal void lb_emit_store(lbProcedure *p, lbValue ptr, lbValue value) {
 			                 LLVMConstInt(LLVMInt64TypeInContext(p->module->ctx), lb_sizeof(LLVMTypeOf(value.value)), false));
 			return;
 		} else if (LLVMIsConstant(value.value)) {
-			lbAddr addr = lb_add_global_generated(p->module, value.type, value, nullptr);
+			lbAddr addr = lb_add_global_generated_from_procedure(p, value.type, value);
 			lb_make_global_private_const(addr);
 
 			LLVMValueRef dst_ptr = ptr.value;
@@ -1976,26 +1997,26 @@ gb_internal LLVMTypeRef lb_type_internal(lbModule *m, Type *type) {
 	case Type_Struct:
 		{
 			type_set_offsets(type);
-			
+
 			i64 full_type_size = type_size_of(type);
 			i64 full_type_align = type_align_of(type);
 			GB_ASSERT(full_type_size % full_type_align == 0);
-			
+
 			if (type->Struct.is_raw_union) {
-				
+
 				lbStructFieldRemapping field_remapping = {};
 				slice_init(&field_remapping, permanent_allocator(), 1);
-				
+
 				LLVMTypeRef fields[1] = {};
 				fields[0] = lb_type_padding_filler(m, full_type_size, full_type_align);
 				field_remapping[0] = 0;
-				
+
 				LLVMTypeRef struct_type = LLVMStructTypeInContext(ctx, fields, gb_count_of(fields), false);
 				map_set(&m->struct_field_remapping, cast(void *)struct_type, field_remapping);
 				map_set(&m->struct_field_remapping, cast(void *)type, field_remapping);
 				return struct_type;
 			}
-			
+
 			lbStructFieldRemapping field_remapping = {};
 			slice_init(&field_remapping, permanent_allocator(), type->Struct.fields.count);
 
@@ -2008,7 +2029,7 @@ gb_internal LLVMTypeRef lb_type_internal(lbModule *m, Type *type) {
 				LLVMTypeRef padding_type = lb_type_padding_filler(m, 0, type_align_of(type));
 				array_add(&fields, padding_type);
 			}
-			
+
 			i64 prev_offset = 0;
 			bool requires_packing = type->Struct.is_packed;
 			for (i32 field_index : struct_fields_index_by_increasing_offset(temporary_allocator(), type)) {
@@ -2039,7 +2060,7 @@ gb_internal LLVMTypeRef lb_type_internal(lbModule *m, Type *type) {
 
 				prev_offset = offset + type_size_of(field->type);
 			}
-			
+
 			i64 end_padding = full_type_size-prev_offset;
 			if (end_padding > 0) {
 				array_add(&fields, lb_type_padding_filler(m, end_padding, 1));
@@ -2048,14 +2069,14 @@ gb_internal LLVMTypeRef lb_type_internal(lbModule *m, Type *type) {
 			for_array(i, fields) {
 				GB_ASSERT(fields[i] != nullptr);
 			}
-			
+
 			LLVMTypeRef struct_type = LLVMStructTypeInContext(ctx, fields.data, cast(unsigned)fields.count, requires_packing);
 			map_set(&m->struct_field_remapping, cast(void *)struct_type, field_remapping);
-			map_set(&m->struct_field_remapping, cast(void *)type, field_remapping);			
+			map_set(&m->struct_field_remapping, cast(void *)type, field_remapping);
 			#if 0
-			GB_ASSERT_MSG(lb_sizeof(struct_type) == full_type_size, 
-			              "(%lld) %s vs (%lld) %s", 
-			              cast(long long)lb_sizeof(struct_type), LLVMPrintTypeToString(struct_type), 
+			GB_ASSERT_MSG(lb_sizeof(struct_type) == full_type_size,
+			              "(%lld) %s vs (%lld) %s",
+			              cast(long long)lb_sizeof(struct_type), LLVMPrintTypeToString(struct_type),
 			              cast(long long)full_type_size, type_to_string(type));
 			#endif
 			return struct_type;
@@ -2084,8 +2105,22 @@ gb_internal LLVMTypeRef lb_type_internal(lbModule *m, Type *type) {
 				LLVMTypeRef variant = lb_type(m, type->Union.variants[0]);
 				array_add(&fields, variant);
 			} else {
-				LLVMTypeRef block_type = lb_type_padding_filler(m, block_size, align);
-				LLVMTypeRef tag_type   = lb_type(m, union_tag_type(type));
+				LLVMTypeRef block_type = nullptr;
+
+				bool all_pointers = align == build_context.ptr_size;
+				for (isize i = 0; all_pointers && i < type->Union.variants.count; i++) {
+					Type *t = type->Union.variants[i];
+					if (!is_type_internally_pointer_like(t)) {
+						all_pointers = false;
+					}
+				}
+				if (all_pointers) {
+					block_type = lb_type(m, t_rawptr);
+				} else {
+					block_type = lb_type_padding_filler(m, block_size, align);
+				}
+
+				LLVMTypeRef tag_type = lb_type(m, union_tag_type(type));
 				array_add(&fields, block_type);
 				array_add(&fields, tag_type);
 				i64 used_size = lb_sizeof(block_type) + lb_sizeof(tag_type);
@@ -2521,12 +2556,10 @@ gb_internal LLVMValueRef lb_find_or_add_entity_string_ptr(lbModule *m, String co
 			false);
 
 
-		isize max_len = 7+8+1;
-		char *name = gb_alloc_array(permanent_allocator(), char, max_len);
-
-		u32 id = m->gen->global_array_index.fetch_add(1);
-		isize len = gb_snprintf(name, max_len, "csbs$%x", id);
-		len -= 1;
+		u32 id = m->global_array_index.fetch_add(1);
+		gbString name = gb_string_make(temporary_allocator(), "csbs$");
+		name = gb_string_appendc(name, m->module_name);
+		name = gb_string_append_fmt(name, "$%x", id);
 
 		LLVMTypeRef type = LLVMTypeOf(data);
 		LLVMValueRef global_data = LLVMAddGlobal(m->mod, type, name);
@@ -2564,14 +2597,11 @@ gb_internal lbValue lb_find_or_add_entity_string_byte_slice_with_type(lbModule *
 		false);
 
 
-	char *name = nullptr;
-	{
-		isize max_len = 7+8+1;
-		name = gb_alloc_array(permanent_allocator(), char, max_len);
-		u32 id = m->gen->global_array_index.fetch_add(1);
-		isize len = gb_snprintf(name, max_len, "csbs$%x", id);
-		len -= 1;
-	}
+	u32 id = m->global_array_index.fetch_add(1);
+	gbString name = gb_string_make(temporary_allocator(), "csba$");
+	name = gb_string_appendc(name, m->module_name);
+	name = gb_string_append_fmt(name, "$%x", id);
+
 	LLVMTypeRef type = LLVMTypeOf(data);
 	LLVMValueRef global_data = LLVMAddGlobal(m->mod, type, name);
 	LLVMSetInitializer(global_data, data);
@@ -2779,23 +2809,16 @@ gb_internal lbValue lb_generate_anonymous_proc_lit(lbModule *m, String const &pr
 }
 
 
-gb_internal lbAddr lb_add_global_generated(lbModule *m, Type *type, lbValue value, Entity **entity_) {
+gb_internal lbAddr lb_add_global_generated_with_name(lbModule *m, Type *type, lbValue value, String name, Entity **entity_) {
+	GB_ASSERT(name.len != 0);
 	GB_ASSERT(type != nullptr);
 	type = default_type(type);
-
-	isize max_len = 7+8+1;
-	u8 *str = cast(u8 *)gb_alloc_array(permanent_allocator(), u8, max_len);
-
-	u32 id = m->gen->global_generated_index.fetch_add(1);
-
-	isize len = gb_snprintf(cast(char *)str, max_len, "ggv$%x", id);
-	String name = make_string(str, len-1);
 
 	Scope *scope = nullptr;
 	Entity *e = alloc_entity_variable(scope, make_token_ident(name), type);
 	lbValue g = {};
 	g.type = alloc_type_pointer(type);
-	g.value = LLVMAddGlobal(m->mod, lb_type(m, type), cast(char const *)str);
+	g.value = LLVMAddGlobal(m->mod, lb_type(m, type), alloc_cstring(temporary_allocator(), name));
 	if (value.value != nullptr) {
 		GB_ASSERT_MSG(LLVMIsConstant(value.value), LLVMPrintValueToString(value.value));
 		LLVMSetInitializer(g.value, value.value);
@@ -2811,30 +2834,23 @@ gb_internal lbAddr lb_add_global_generated(lbModule *m, Type *type, lbValue valu
 	return lb_addr(g);
 }
 
-gb_internal lbAddr lb_add_global_generated_with_name(lbModule *m, Type *type, lbValue value, String name) {
+
+gb_internal lbAddr lb_add_global_generated_from_procedure(lbProcedure *p, Type *type, lbValue value) {
 	GB_ASSERT(type != nullptr);
 	type = default_type(type);
 
-	isize max_len = 7+8+1;
-	u8 *str = cast(u8 *)gb_alloc_array(permanent_allocator(), u8, max_len);
+	u32 index = ++p->global_generated_index;
 
-	Scope *scope = nullptr;
-	Entity *e = alloc_entity_variable(scope, make_token_ident(name), type);
-	lbValue g = {};
-	g.type = alloc_type_pointer(type);
-	g.value = LLVMAddGlobal(m->mod, lb_type(m, type), cast(char const *)str);
-	if (value.value != nullptr) {
-		GB_ASSERT_MSG(LLVMIsConstant(value.value), LLVMPrintValueToString(value.value));
-		LLVMSetInitializer(g.value, value.value);
-	} else {
-		LLVMSetInitializer(g.value, LLVMConstNull(lb_type(m, type)));
-	}
+	gbString s = gb_string_make(temporary_allocator(), "ggv$");
+	// s = gb_string_appendc(s, p->module->module_name);
+	// s = gb_string_appendc(s, "$");
+	s = gb_string_append_length(s, p->name.text, p->name.len);
+	s = gb_string_append_fmt(s, "$%u", index);
 
-	lb_add_entity(m, e, g);
-	lb_add_member(m, name, g);
-
-	return lb_addr(g);
+	String name = make_string(cast(u8 const *)s, gb_string_length(s));
+	return lb_add_global_generated_with_name(p->module, type, value, name);
 }
+
 
 
 gb_internal lbValue lb_find_runtime_value(lbModule *m, String const &name) {
@@ -2944,7 +2960,7 @@ gb_internal lbValue lb_generate_global_array(lbModule *m, Type *elem_type, i64 c
 	g.type = alloc_type_pointer(t);
 	LLVMSetInitializer(g.value, LLVMConstNull(lb_type(m, t)));
 	LLVMSetLinkage(g.value, LLVMPrivateLinkage);
-	LLVMSetUnnamedAddress(g.value, LLVMGlobalUnnamedAddr);
+	// LLVMSetUnnamedAddress(g.value, LLVMGlobalUnnamedAddr);
 	string_map_set(&m->members, s, g);
 	return g;
 }

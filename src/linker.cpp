@@ -143,7 +143,7 @@ gb_internal i32 linker_stage(LinkerData *gen) {
 			LIT(target_arch_names[build_context.metrics.arch])
 		);
 #endif
-	} else if (build_context.cross_compiling && build_context.different_os) {
+	} else if (build_context.cross_compiling && (build_context.different_os || selected_subtarget != Subtarget_Default)) {
 		switch (selected_subtarget) {
 		case Subtarget_Android:
 			is_cross_linking = true;
@@ -603,7 +603,7 @@ try_cross_linking:;
 								// object
 								// dynamic lib
 								// static libs, absolute full path relative to the file in which the lib was imported from
-								lib_str = gb_string_append_fmt(lib_str, " %.*s ", LIT(lib));
+								lib_str = gb_string_append_fmt(lib_str, " \"%.*s\" ", LIT(lib));
 							} else {
 								// dynamic or static system lib, just link regularly searching system library paths
 								lib_str = gb_string_append_fmt(lib_str, " -l%.*s ", LIT(lib));
@@ -643,9 +643,10 @@ try_cross_linking:;
 				android_glue_object = concatenate4_strings(temporary_allocator(), temp_dir, str_lit("android_native_app_glue-"), hash, str_lit(".o"));
 				android_glue_static_lib = concatenate4_strings(permanent_allocator(), temp_dir, str_lit("libandroid_native_app_glue-"), hash, str_lit(".a"));
 
-				gbString glue = gb_string_make(heap_allocator(), clang_path);
+				gbString glue = gb_string_make_length(heap_allocator(), ODIN_ANDROID_NDK_TOOLCHAIN.text, ODIN_ANDROID_NDK_TOOLCHAIN.len);
 				defer (gb_string_free(glue));
 
+				glue = gb_string_append_fmt(glue, "bin/clang");
 				glue = gb_string_append_fmt(glue, " --target=aarch64-linux-android%d ", ODIN_ANDROID_API_LEVEL);
 				glue = gb_string_appendc(glue, "-c \"");
 				glue = gb_string_append_length(glue, ODIN_ANDROID_NDK.text, ODIN_ANDROID_NDK.len);
@@ -653,6 +654,11 @@ try_cross_linking:;
 				glue = gb_string_appendc(glue, "\" ");
 				glue = gb_string_appendc(glue, "-o \"");
 				glue = gb_string_append_length(glue, android_glue_object.text, android_glue_object.len);
+				glue = gb_string_appendc(glue, "\" ");
+
+				glue = gb_string_appendc(glue, "--sysroot \"");
+				glue = gb_string_append_length(glue, ODIN_ANDROID_NDK_TOOLCHAIN.text, ODIN_ANDROID_NDK_TOOLCHAIN.len);
+				glue = gb_string_appendc(glue, "sysroot");
 				glue = gb_string_appendc(glue, "\" ");
 
 				glue = gb_string_appendc(glue, "\"-I");
@@ -803,6 +809,9 @@ try_cross_linking:;
 				platform_lib_str = gb_string_append_length(platform_lib_str, ODIN_ANDROID_NDK_TOOLCHAIN_LIB_LEVEL.text, ODIN_ANDROID_NDK_TOOLCHAIN_LIB_LEVEL.len);
 				platform_lib_str = gb_string_appendc(platform_lib_str, "\" ");
 
+				platform_lib_str = gb_string_appendc(platform_lib_str, "-landroid ");
+				platform_lib_str = gb_string_appendc(platform_lib_str, "-llog ");
+
 				platform_lib_str = gb_string_appendc(platform_lib_str, "\"--sysroot=");
 				platform_lib_str = gb_string_append_length(platform_lib_str, ODIN_ANDROID_NDK_TOOLCHAIN_SYSROOT.text, ODIN_ANDROID_NDK_TOOLCHAIN_SYSROOT.len);
 				platform_lib_str = gb_string_appendc(platform_lib_str, "\" ");
@@ -835,11 +844,16 @@ try_cross_linking:;
 				}
 			}
 
-			gbString link_command_line = gb_string_make(heap_allocator(), clang_path);
+			gbString link_command_line = gb_string_make(heap_allocator(), "");
 			defer (gb_string_free(link_command_line));
 
 			if (is_android) {
+				gbString ndk_bin_directory = gb_string_make_length(temporary_allocator(), ODIN_ANDROID_NDK_TOOLCHAIN.text, ODIN_ANDROID_NDK_TOOLCHAIN.len);
+				link_command_line = gb_string_appendc(link_command_line, ndk_bin_directory);
+				link_command_line = gb_string_appendc(link_command_line, "bin/clang");
 				link_command_line = gb_string_append_fmt(link_command_line, " --target=aarch64-linux-android%d ", ODIN_ANDROID_API_LEVEL);
+			} else {
+				link_command_line = gb_string_appendc(link_command_line, clang_path);
 			}
 			link_command_line = gb_string_appendc(link_command_line, " -Wno-unused-command-line-argument ");
 			link_command_line = gb_string_appendc(link_command_line, object_files);

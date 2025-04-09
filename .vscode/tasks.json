@@ -1,0 +1,45 @@
+{
+    // See https://go.microsoft.com/fwlink/?LinkId=733558
+    // for the documentation about the tasks.json format
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "build",
+            "type": "shell",
+            "command": "${workspaceFolder}/build_odin.sh",
+            // "args": [ "" ],
+            "problemMatcher": "$gcc"
+        },
+
+        // {
+        //     "label": "build-debug",
+        //     "type": "shell",
+        //     "command": "${workspaceFolder}/build_odin.sh",
+        //     "args": [ "debug" ],
+        //     "problemMatcher": "$gcc"
+        // },
+
+        {
+            "label": "build-debug",
+            "type": "shell",
+            "command": "cmake",
+            "options": {"cwd": "${workspaceFolder}/build"},
+            
+            "args": [
+                "--build", ".",
+                "--target", "odin",
+                "--config", "Debug",
+                "-j", "16"
+            ],
+
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            
+            "windows":{},
+            "linux":{"problemMatcher": [ "$gcc" ]},
+            "osx":{"problemMatcher": [ "$gcc" ]},
+        }
+    ]
+}

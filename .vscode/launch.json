@@ -1,0 +1,277 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        // {
+        //     "name": "debug",
+        //     // "type": "lldb",
+        //     "type": "cppdbg",
+        //     "osx": {
+        //         "MIMode": "lldb"
+        //     },
+        //     "request": "launch",
+        //     "program": "${workspaceFolder}/build/odin",
+        //     "args": [
+        //         "gendef", "samples/metal_app",
+        //         "-collection:samples=./samples",
+        //         // "-collection:root=.",
+        //         // "-collection:root=./darwodin-ios-lite",
+        //         "-collection:root=./darwodin-macos",
+        //         "-out:.bin/main",
+        //         "-o:none",
+        //         "-debug",
+        //         // "-show-system-calls",
+        //         // "-keep-temp-files",
+        //         // "-show-more-timings",
+        //         // "-show-debug-messages",
+        //         // "-target:darwin_arm64",
+        //         // "-subtarget:ios",
+        //         "-thread-count:1"
+        //     ],
+        //     "preLaunchTask": "build-debug",
+        //     "cwd": "/Users/harito/projects/apps/darwodin"
+        //     // "cwd": "${workspaceFolder}"
+        // },
+        {
+            "name": "darwodin-cmake",
+            // "type": "lldb",
+            "type": "cppdbg",
+            "osx": {
+                "MIMode": "lldb"
+            },
+            "request": "launch",
+            "program": "${workspaceFolder}/build/odin",
+            "args": [
+                "build", "samples/metal_app",
+                "-collection:samples=./samples",
+                // "-collection:root=.",
+                // "-collection:root=./darwodin-ios-lite",
+                "-collection:root=./darwodin-macos",
+                "-out:.bin/main",
+                "-o:none",
+                "-debug",
+                // "-show-system-calls",
+                "-keep-temp-files",
+                "-show-more-timings",
+                // "-show-debug-messages",
+                "-target:darwin_arm64",
+                // "-subtarget:ios",
+                "-thread-count:1"
+            ],
+            "preLaunchTask": "build-debug",
+            "cwd": "/Users/harito/projects/apps/darwodin"
+            // "cwd": "${workspaceFolder}"
+        },
+    
+        {
+            // "type": "lldb",
+            "type": "cppdbg",
+            "osx": {
+                "MIMode": "lldb"
+            },
+            "request": "launch",
+            "name": "darwodin",
+            "program": "${workspaceFolder}/odin",
+            "args": [
+                "build", "samples/metal_app",
+                "-collection:samples=./samples",
+                // "-collection:root=.",
+                // "-collection:root=./darwodin-ios-lite",
+                "-collection:root=./darwodin-macos",
+                "-out:.bin/main",
+                "-o:none",
+                "-debug",
+                // "-show-system-calls",
+                "-keep-temp-files",
+                "-show-more-timings",
+                // "-show-debug-messages",
+                "-target:darwin_arm64",
+                // "-subtarget:ios",
+                "-thread-count:5"
+            ],
+            // "preLaunchTask": "build",
+            "cwd": "/Users/harito/projects/apps/darwodin"
+            // "cwd": "${workspaceFolder}"
+        },
+
+        {
+            "name": "bug",
+            // "type": "lldb",
+            "type": "cppdbg", "osx": { "MIMode": "lldb" },
+            "request": "launch",
+            // "program": "${workspaceFolder}/odin",
+            "program": "${workspaceFolder}/odin",
+            "args": [
+                "build", 
+                "bug.odin", "-file",
+                // "src/ui/previewer",
+                // "-collection:root=./src",
+                // "-collection:libs=./libs",
+                // "-out:.bin/previewer",
+                "-o:none",
+                "-debug",
+                // "-thread-count:5",
+                // "'-extra-linker-flags:-Wl,-rpath /usr/local/lib -Wl,-rpath -Wl,@executable_path'",
+                
+                "-thread-count:1",
+            ],
+            // "preLaunchTask": "build-debug",
+            "cwd": "${workspaceFolder}/bugs",
+            // "cwd": "/Users/harito/projects/games/rockcore-odin",
+            
+        },
+        
+
+        {
+            "name": "ols",
+            // "type": "lldb",
+            "type": "cppdbg", "osx": { "MIMode": "lldb" },
+            "request": "launch",
+            // "program": "${workspaceFolder}/odin",
+            "program": "${workspaceFolder}/build/odin",
+            "args": [
+                "build", "src/", "-collection:src=src", "-out:ols", "-debug"
+                ,"-thread-count:1"
+            ],
+            // "preLaunchTask": "build",
+            "cwd": "/Users/harito/projects/oss/ols"
+            
+        },
+
+        {
+            "name":           "rock-odin - LLDB",
+            "type":           "lldb",
+            "request":        "launch",
+            "program":        "${workspaceFolder}/build/odin",
+            "preLaunchTask": "build-debug",
+            "cwd":            "/Users/harito/projects/games/rockcore-odin",
+            "args": [
+                "build", 
+                // "src/sandbox",
+                "src/games",
+                "-collection:root=./src",
+                "-collection:libs=./libs",
+                
+                "-ignore-warnings",
+
+                // "-out:.bin/main",
+                "-out:.bin/game",
+                "-o:none",
+                "-debug",
+                // "-show-more-timings",
+                // "-show-debug-messages",
+                "-thread-count:4",
+                // "-use-single-module",
+                
+                "-minimum-os-version:14.0.0",
+                "-target:darwin_arm64",
+                "'-extra-linker-flags:-Wl,-rpath -Wl,@executable_path -Wl,-rpath /usr/local/lib -Wl,-L/Users/harito/projects/games/rockcore-odin/tools/macos/'"
+            ],
+            
+            // "initCommands": [
+            //     "command script import ${workspaceFolder}/odin_lldb.py"
+            // ]
+        },
+
+        {
+            "name":           "bug - LLDB",
+            "type":           "lldb",
+            "request":        "launch",
+            "program":        "${workspaceFolder}/build/odin",
+            // "program":        "${workspaceFolder}/odin",
+            "preLaunchTask": "build-debug",
+            // "cwd":            "/Users/harito/projects/games/rockcore-odin",
+            "cwd": "${workspaceFolder}",
+            "args": [
+                "build", "bugs",
+                "-ignore-warnings",
+                "-out:.bin/main",
+                "-o:none",
+                "-debug",
+                // "",
+                // "-thread-count:4",
+                // "-use-single-module",
+                // "-use-separate-modules",
+                "-no-threaded-checker",
+                "-minimum-os-version:14.0.0",
+                "-target:darwin_arm64",
+            ],
+            
+            // "initCommands": [
+            //     "command script import ${workspaceFolder}/odin_lldb.py"
+            // ]
+        },
+
+        {
+            "name"         : "rock-odin",
+            "type"         : "cppdbg",
+            "request"      : "launch",
+            "program"      : "${workspaceFolder}/build/odin",
+            "preLaunchTask": "build-debug",
+            "cwd"          : "/Users/harito/projects/games/rockcore-odin",
+            "osx": {
+                "MIMode": "lldb"
+            },
+            "args": [
+                "build", "src/sandbox",
+                "-collection:root=./src",
+                "-collection:libs=./libs",
+                // "-out:.bin/main",
+                "-out:.bin/sandbox",
+                "-o:none",
+                "-debug",
+                // "-show-more-timings",
+                // "-show-debug-messages",
+                "-thread-count:1",
+                
+                "-minimum-os-version:14.0.0",
+                "-target:darwin_arm64",
+                "'-extra-linker-flags:-Wl,-rpath -Wl,@executable_path -Wl,-rpath /usr/local/lib -Wl,-L/Users/harito/projects/games/rockcore-odin/tools/macos/'"
+            ],
+        },
+
+        {
+            "name"         : "nested-packages",
+            "type"         : "cppdbg",
+            "request"      : "launch",
+            "program"      : "${workspaceFolder}/build/odin",
+            "preLaunchTask": "build-debug",
+            "cwd"          : "${workspaceFolder}",
+            "osx": {
+                "MIMode": "lldb"
+            },
+            "args": [
+                "build", "sandbox/test_nested_package",
+                "-out:.bin/test_nested_package",
+                "-o:none",
+                "-debug",
+                "-thread-count:1",
+                "-no-threaded-checker",
+            ],
+        },
+
+        {
+            "name": "arm64 linux bug",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/odin",
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "",
+            "args": [
+                "build", "bugs",// "-file:bugs/arm64_syscall.odin",
+                // "-build-mode:exe", "-out:.bin/arm64_bug"
+                // "-build-mode:assembly", "-out:.bin/arm64_bug.asm",
+                // "-build-mode:llvm-ir", "-out:.bin/arm64_bug.bc",
+                "-target:linux_arm64",
+                "-o:speed",
+                "-thread-count:1",
+            ],
+            "internalConsoleOptions": "openOnSessionStart",
+            "osx": {
+                "MIMode": "lldb"
+            }
+        },
+    ]
+}

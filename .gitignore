@@ -297,3 +297,6 @@ build.sh
 *.raddbg
 
 misc/featuregen/featuregen
+
+src/llvm-c-windows/
+bugs/

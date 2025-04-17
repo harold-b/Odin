@@ -194,7 +194,7 @@
                 // "-thread-count:4",
                 // "-use-single-module",
                 // "-use-separate-modules",
-                "-no-threaded-checker",
+                // "-no-threaded-checker",
                 "-minimum-os-version:14.0.0",
                 "-target:darwin_arm64",
             ],

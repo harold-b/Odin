@@ -847,13 +847,39 @@ gb_global NamedTargetMetrics *selected_target_metrics;
 gb_global Subtarget selected_subtarget;
 
 
-gb_internal TargetOsKind get_target_os_from_string(String str) {
+gb_internal TargetOsKind get_target_os_from_string(String str, Subtarget *subtarget_ = nullptr) {
+	String os_name = str;
+	String subtarget = {};
+	auto part = string_partition(str, str_lit(":"));
+	if (part.match.len == 1) {
+		os_name = part.head;
+		subtarget = part.tail;
+	}
+
+	TargetOsKind kind = TargetOs_Invalid;
+
 	for (isize i = 0; i < TargetOs_COUNT; i++) {
-		if (str_eq_ignore_case(target_os_names[i], str)) {
-			return cast(TargetOsKind)i;
+		if (str_eq_ignore_case(target_os_names[i], os_name)) {
+			kind = cast(TargetOsKind)i;
+			break;
 		}
 	}
-	return TargetOs_Invalid;
+	if (subtarget_) *subtarget_ = Subtarget_Default;
+
+	if (subtarget.len != 0) {
+		if (str_eq_ignore_case(subtarget, "generic") || str_eq_ignore_case(subtarget, "default")) {
+			if (subtarget_) *subtarget_ = Subtarget_Default;
+		} else {
+			for (isize i = 1; i < Subtarget_COUNT; i++) {
+				if (str_eq_ignore_case(subtarget_strings[i], subtarget)) {
+					if (subtarget_) *subtarget_ = cast(Subtarget)i;
+					break;
+				}
+			}
+		}
+	}
+
+	return kind;
 }
 
 gb_internal TargetArchKind get_target_arch_from_string(String str) {
@@ -1863,7 +1889,7 @@ gb_internal void init_build_context(TargetMetrics *cross_target, Subtarget subta
 			bc->metrics.target_triplet = concatenate_strings(permanent_allocator(), bc->metrics.target_triplet, bc->minimum_os_version_string);
 		}
 	} else if (selected_subtarget == Subtarget_Android) {
-		init_android_values(bc->build_mode == BuildMode_Executable);
+		init_android_values(bc->build_mode == BuildMode_Executable && (bc->command_kind & Command__does_build) != 0);
 	}
 
 	if (!bc->custom_optimization_level) {

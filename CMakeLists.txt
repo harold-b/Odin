@@ -20,7 +20,7 @@ find_package(Threads REQUIRED)
 add_executable(odin src/main.cpp src/libtommath.cpp)
 
 target_include_directories(odin PRIVATE
-  ${CMAKE_SOURCE_DIR}/src
+#  ${CMAKE_SOURCE_DIR}/src
   /opt/homebrew/Cellar/llvm@17/17.0.6/include
 )
 

@@ -300,3 +300,4 @@ misc/featuregen/featuregen
 
 src/llvm-c-windows/
 bugs/
+cmake-build-*/

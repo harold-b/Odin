@@ -122,6 +122,17 @@
             // "cwd": "/Users/harito/projects/games/rockcore-odin",
             
         },
+
+        {
+            "name": "oc_sandbox - Odin",
+            "type": "lldb",
+            // "type": "cppdbg", "osx": { "MIMode": "lldb" },
+            "request": "launch",
+            "program": "${workspaceFolder}/.bin/oc_sandbox",
+            "args": [
+            ],
+            
+        },
         
 
         {

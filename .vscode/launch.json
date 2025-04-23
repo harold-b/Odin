@@ -128,7 +128,8 @@
             "type": "lldb",
             // "type": "cppdbg", "osx": { "MIMode": "lldb" },
             "request": "launch",
-            "program": "${workspaceFolder}/.bin/oc_sandbox",
+            // "program": "${workspaceFolder}/.bin/oc_sandbox",
+            "program": "${workspaceFolder}/.bin/oc_selectors",
             "args": [
             ],
             

@@ -18,6 +18,39 @@
         //     "args": [ "debug" ],
         //     "problemMatcher": "$gcc"
         // },
+        {
+            "label": "build-oc_sandbox",
+            "type": "shell",
+            "command": "odin",
+            "options": {"cwd": "${workspaceFolder}"},
+            "args": [
+                "build",
+                "bugs/oc_classes/oc_selectors.odin",
+                "-file",
+                "-out:.bin/oc_selectors",
+                "-o:none",
+                "-debug",
+                "-minimum-os-version:14.0.0",
+                "-target:darwin_arm64",
+                "-thread-count:4",
+                // "-no-threaded-checker",
+                // -use-single-module
+                // -keep-temp-files
+
+            ],
+            "problemMatcher": {
+                "owner": "odin",
+                "fileLocation": ["absolute"],
+                "pattern": {
+                    "regexp": "^(.+)\\(([0-9]+)\\:([0-9]+)\\) ([^:]+)(.+)$",
+                    "file": 1,
+                    "line": 2,
+                    "column": 3,
+                    "severity": 4,
+                    "message": 5
+                }
+            }
+        },
 
         {
             "label": "build-debug",

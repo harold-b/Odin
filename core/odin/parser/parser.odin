@@ -2308,6 +2308,7 @@ parse_operand :: proc(p: ^Parser, lhs: bool) -> ^ast.Expr {
 		p.expr_level += 1
 		expr := parse_expr(p, false)
 		p.expr_level -= 1
+		skip_possible_newline(p)
 		close := expect_token(p, .Close_Paren)
 
 		pe := ast.new(ast.Paren_Expr, open.pos, end_pos(close))
@@ -3526,6 +3527,7 @@ parse_binary_expr :: proc(p: ^Parser, lhs: bool, prec_in: int) -> ^ast.Expr {
 			case .When:
 				x := expr
 				cond := parse_expr(p, lhs)
+				skip_possible_newline(p)
 				else_tok := expect_token(p, .Else)
 				y := parse_expr(p, lhs)
 				te := ast.new(ast.Ternary_When_Expr, expr.pos, end_pos(p.prev_tok))

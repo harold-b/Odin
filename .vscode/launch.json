@@ -127,6 +127,7 @@
             "name": "oc_sandbox - Odin",
             "type": "lldb",
             // "type": "cppdbg", "osx": { "MIMode": "lldb" },
+            "preLaunchTask": "build-oc_sandbox",
             "request": "launch",
             // "program": "${workspaceFolder}/.bin/oc_sandbox",
             "program": "${workspaceFolder}/.bin/oc_selectors",

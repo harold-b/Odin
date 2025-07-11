@@ -116,7 +116,7 @@ _create_socket :: proc(family: Address_Family, protocol: Socket_Protocol) -> (so
 }
 
 @(private)
-_dial_tcp_from_endpoint :: proc(endpoint: Endpoint, options := default_tcp_options) -> (socket: TCP_Socket, err: Network_Error) {
+_dial_tcp_from_endpoint :: proc(endpoint: Endpoint, options := DEFAULT_TCP_OPTIONS) -> (socket: TCP_Socket, err: Network_Error) {
 	if endpoint.port == 0 {
 		err = .Port_Required
 		return
@@ -177,11 +177,11 @@ _listen_tcp :: proc(interface_endpoint: Endpoint, backlog := 1000) -> (socket: T
 }
 
 @(private)
-_bound_endpoint :: proc(sock: Any_Socket) -> (ep: Endpoint, err: Listen_Error) {
+_bound_endpoint :: proc(sock: Any_Socket) -> (ep: Endpoint, err: Socket_Info_Error) {
 	sockaddr: win.SOCKADDR_STORAGE_LH
 	sockaddrlen := c.int(size_of(sockaddr))
 	if win.getsockname(win.SOCKET(any_socket_to_socket(sock)), &sockaddr, &sockaddrlen) == win.SOCKET_ERROR {
-		err = _listen_error()
+		err = _socket_info_error()
 		return
 	}
 
@@ -190,7 +190,21 @@ _bound_endpoint :: proc(sock: Any_Socket) -> (ep: Endpoint, err: Listen_Error) {
 }
 
 @(private)
-_accept_tcp :: proc(sock: TCP_Socket, options := default_tcp_options) -> (client: TCP_Socket, source: Endpoint, err: Accept_Error) {
+_peer_endpoint :: proc(sock: Any_Socket) -> (ep: Endpoint, err: Socket_Info_Error) {
+	sockaddr: win.SOCKADDR_STORAGE_LH
+	sockaddrlen := c.int(size_of(sockaddr))
+	res := win.getpeername(win.SOCKET(any_socket_to_socket(sock)), &sockaddr, &sockaddrlen)
+	if res < 0 {
+		err = _socket_info_error()
+		return
+	}
+
+	ep = _sockaddr_to_endpoint(&sockaddr)
+	return
+}
+
+@(private)
+_accept_tcp :: proc(sock: TCP_Socket, options := DEFAULT_TCP_OPTIONS) -> (client: TCP_Socket, source: Endpoint, err: Accept_Error) {
 	for {
 		sockaddr: win.SOCKADDR_STORAGE_LH
 		sockaddrlen := c.int(size_of(sockaddr))

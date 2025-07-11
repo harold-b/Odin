@@ -728,11 +728,16 @@ gb_internal void check_scope_usage_internal(Checker *c, Scope *scope, u64 vet_fl
 		bool is_unused = false;
 		if (vet_unused && check_vet_unused(c, e, &ve_unused)) {
 			is_unused = true;
-		} else if (vet_unused_procedures &&
-		           e->kind == Entity_Procedure) {
+		} else if (vet_unused_procedures && e->kind == Entity_Procedure) {
 			if (e->flags&EntityFlag_Used) {
 				is_unused = false;
 			} else if (e->flags & EntityFlag_Require) {
+				is_unused = false;
+			} else if (e->flags & EntityFlag_Init) {
+				is_unused = false;
+			} else if (e->flags & EntityFlag_Fini) {
+				is_unused = false;
+			} else if (e->Procedure.is_export) {
 				is_unused = false;
 			} else if (e->pkg && e->pkg->kind == Package_Init && e->token.string == "main") {
 				is_unused = false;
@@ -1073,11 +1078,30 @@ gb_internal void init_universal(void) {
 	add_global_bool_constant("true",  true);
 	add_global_bool_constant("false", false);
 
-	add_global_string_constant("ODIN_VENDOR",             bc->ODIN_VENDOR);
-	add_global_string_constant("ODIN_VERSION",            bc->ODIN_VERSION);
-	add_global_string_constant("ODIN_ROOT",               bc->ODIN_ROOT);
-	add_global_string_constant("ODIN_BUILD_PROJECT_NAME", bc->ODIN_BUILD_PROJECT_NAME);
-	add_global_string_constant("ODIN_WINDOWS_SUBSYSTEM",  bc->ODIN_WINDOWS_SUBSYSTEM);
+	add_global_string_constant("ODIN_VENDOR",                   bc->ODIN_VENDOR);
+	add_global_string_constant("ODIN_VERSION",                  bc->ODIN_VERSION);
+	add_global_string_constant("ODIN_ROOT",                     bc->ODIN_ROOT);
+	add_global_string_constant("ODIN_BUILD_PROJECT_NAME",       bc->ODIN_BUILD_PROJECT_NAME);
+
+	{
+		GlobalEnumValue values[Windows_Subsystem_COUNT] = {
+			{"Unknown",                 Windows_Subsystem_UNKNOWN},
+		 	{"Boot_Application",        Windows_Subsystem_BOOT_APPLICATION},
+			{"Console",                 Windows_Subsystem_CONSOLE},
+			{"EFI_Application",         Windows_Subsystem_EFI_APPLICATION},
+			{"EFI_Boot_Service_Driver", Windows_Subsystem_EFI_BOOT_SERVICE_DRIVER},
+			{"EFI_Rom",                 Windows_Subsystem_EFI_ROM},
+			{"EFI_Runtime_Driver",      Windows_Subsystem_EFI_RUNTIME_DRIVER},
+			{"Native",                  Windows_Subsystem_NATIVE},
+			{"Posix",                   Windows_Subsystem_POSIX},
+			{"Windows",                 Windows_Subsystem_WINDOWS},
+			{"Windows_CE",              Windows_Subsystem_WINDOWSCE},
+		};
+
+		auto fields = add_global_enum_type(str_lit("Odin_Windows_Subsystem_Type"), values, gb_count_of(values));
+		add_global_enum_constant(fields, "ODIN_WINDOWS_SUBSYSTEM",  bc->ODIN_WINDOWS_SUBSYSTEM);
+		add_global_string_constant("ODIN_WINDOWS_SUBSYSTEM_STRING", windows_subsystem_names[bc->ODIN_WINDOWS_SUBSYSTEM]);
+	}
 
 	{
 		GlobalEnumValue values[TargetOs_COUNT] = {
@@ -1097,7 +1121,7 @@ gb_internal void init_universal(void) {
 		};
 
 		auto fields = add_global_enum_type(str_lit("Odin_OS_Type"), values, gb_count_of(values));
-		add_global_enum_constant(fields, "ODIN_OS", bc->metrics.os);
+		add_global_enum_constant(fields, "ODIN_OS",  bc->metrics.os);
 		add_global_string_constant("ODIN_OS_STRING", target_os_names[bc->metrics.os]);
 	}
 
@@ -2030,7 +2054,7 @@ gb_internal void add_type_info_type(CheckerContext *c, Type *t) {
 }
 
 gb_internal void add_type_info_type_internal(CheckerContext *c, Type *t) {
-	if (t == nullptr) {
+	if (t == nullptr || c == nullptr) {
 		return;
 	}
 
@@ -3745,6 +3769,18 @@ gb_internal DECL_ATTRIBUTE_PROC(proc_decl_attribute) {
 			error(value, "'%.*s' expects no parameter", LIT(name));
 		}
 		ac->instrumentation_exit = true;
+		return true;
+	} else if (name == "no_sanitize_address") {
+		if (value != nullptr) {
+			error(value, "'%.*s' expects no parameter", LIT(name));
+		}
+		ac->no_sanitize_address = true;
+		return true;
+	} else if (name == "no_sanitize_memory") {
+		if (value != nullptr) {
+			error(value, "'%.*s' expects no parameter", LIT(name));
+		}
+		ac->no_sanitize_memory = true;
 		return true;
 	}
 	return false;
@@ -6314,6 +6350,12 @@ gb_internal void check_deferred_procedures(Checker *c) {
 			continue;
 		}
 
+		if (dst->flags & EntityFlag_Disabled) {
+			// Prevent procedures that have been disabled from acting as deferrals.
+			src->Procedure.deferred_procedure = {};
+			continue;
+		}
+
 		GB_ASSERT(is_type_proc(src->type));
 		GB_ASSERT(is_type_proc(dst->type));
 		Type *src_params = base_type(src->type)->Proc.params;
@@ -6541,6 +6583,19 @@ gb_internal void check_unique_package_names(Checker *c) {
 		           "\tThere is no relation between a package name and the directory that contains it, so they can be completely different\n"
 		           "\tA package name is required for link name prefixing to have a consistent ABI\n");
 		error_line("%s found at previous location\n", token_pos_to_string(ast_token(prev).pos));
+
+		// NOTE(Jeroen): Check if the conflicting imports are the same case-folded directory
+		//               See https://github.com/odin-lang/Odin/issues/5080
+		#if defined(GB_SYSTEM_WINDOWS)
+		String dir_a = pkg->files[0]->directory;
+		String dir_b = (*found)->files[0]->directory;
+
+		if (str_eq_ignore_case(dir_a, dir_b)) {
+			error_line("\tRemember that Windows case-folds paths, and so %.*s and %.*s are the same directory.\n", LIT(dir_a), LIT(dir_b));
+			// Could also perform a FS lookup to check which of the two is the actual directory and suggest it, but this should be enough.
+		}
+		#endif
+
 		end_error_block();
 	}
 }
@@ -6623,7 +6678,7 @@ gb_internal void check_sort_init_and_fini_procedures(Checker *c) {
 gb_internal void add_type_info_for_type_definitions(Checker *c) {
 	for_array(i, c->info.definitions) {
 		Entity *e = c->info.definitions[i];
-		if (e->kind == Entity_TypeName && e->type != nullptr) {
+		if (e->kind == Entity_TypeName && e->type != nullptr && is_type_typed(e->type)) {
 			i64 align = type_align_of(e->type);
 			if (align > 0 && ptr_set_exists(&c->info.minimum_dependency_set, e)) {
 				add_type_info_type(&c->builtin_ctx, e->type);
@@ -6745,7 +6800,7 @@ gb_internal void check_parsed_files(Checker *c) {
 	// NOTE(bill): Check for illegal cyclic type declarations
 	for_array(i, c->info.definitions) {
 		Entity *e = c->info.definitions[i];
-		if (e->kind == Entity_TypeName && e->type != nullptr) {
+		if (e->kind == Entity_TypeName && e->type != nullptr && is_type_typed(e->type)) {
 			(void)type_align_of(e->type);
 		} else if (e->kind == Entity_Procedure) {
 			DeclInfo *decl = e->decl_info;

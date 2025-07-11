@@ -1907,6 +1907,10 @@ gb_internal lbProcedure *lb_create_startup_runtime(lbModule *main_module, lbProc
 	lb_add_attribute_to_proc(p->module, p->value, "optnone");
 	lb_add_attribute_to_proc(p->module, p->value, "noinline");
 
+	// Make sure shared libraries call their own runtime startup on Linux.
+	LLVMSetVisibility(p->value, LLVMHiddenVisibility);
+	LLVMSetLinkage(p->value, LLVMWeakAnyLinkage);
+
 	lb_begin_procedure_body(p);
 
 	lb_setup_type_info_data(main_module);
@@ -1973,14 +1977,14 @@ gb_internal lbProcedure *lb_create_startup_runtime(lbModule *main_module, lbProc
 				gbString var_name = gb_string_make(permanent_allocator(), "__$global_any::");
 				gbString e_str = string_canonical_entity_name(temporary_allocator(), e);
 				var_name = gb_string_append_length(var_name, e_str, gb_strlen(e_str));
-				lbAddr g = lb_add_global_generated_with_name(main_module, var_type, var.init, make_string_c(var_name));
+				lbAddr g = lb_add_global_generated_with_name(main_module, var_type, {}, make_string_c(var_name));
 				lb_addr_store(p, g, var.init);
 				lbValue gp = lb_addr_get_ptr(p, g);
 
 				lbValue data = lb_emit_struct_ep(p, var.var, 0);
 				lbValue ti   = lb_emit_struct_ep(p, var.var, 1);
 				lb_emit_store(p, data, lb_emit_conv(p, gp, t_rawptr));
-				lb_emit_store(p, ti,   lb_type_info(p, var_type));
+				lb_emit_store(p, ti,   lb_typeid(p->module, var_type));
 			} else {
 				LLVMTypeRef vt = llvm_addr_type(p->module, var.var);
 				lbValue src0 = lb_emit_conv(p, var.init, t);
@@ -2015,6 +2019,10 @@ gb_internal lbProcedure *lb_create_cleanup_runtime(lbModule *main_module) { // C
 	p->is_startup = true;
 	lb_add_attribute_to_proc(p->module, p->value, "optnone");
 	lb_add_attribute_to_proc(p->module, p->value, "noinline");
+
+	// Make sure shared libraries call their own runtime cleanup on Linux.
+	LLVMSetVisibility(p->value, LLVMHiddenVisibility);
+	LLVMSetLinkage(p->value, LLVMWeakAnyLinkage);
 
 	lb_begin_procedure_body(p);
 
@@ -2090,7 +2098,7 @@ gb_internal void lb_create_global_procedures_and_types(lbGenerator *gen, Checker
 			break;
 		case Entity_Constant:
 			if (build_context.ODIN_DEBUG) {
-				add_debug_info_for_global_constant_from_entity(gen, e);
+				lb_add_debug_info_for_global_constant_from_entity(gen, e);
 			}
 			break;
 		}
@@ -2496,7 +2504,6 @@ gb_internal String lb_filepath_obj_for_module(lbModule *m) {
 
 	gbString path = gb_string_make_length(heap_allocator(), basename.text, basename.len);
 	path = gb_string_appendc(path, "/");
-	path = gb_string_append_length(path, name.text, name.len);
 
 	if (USE_SEPARATE_MODULES) {
 		GB_ASSERT(m->module_name != nullptr);
@@ -2508,6 +2515,8 @@ gb_internal String lb_filepath_obj_for_module(lbModule *m) {
 		}
 
 		path = gb_string_append_length(path, s.text, s.len);
+	} else {
+		path = gb_string_append_length(path, name.text, name.len);
 	}
 
 	if (use_temporary_directory) {
@@ -2518,38 +2527,15 @@ gb_internal String lb_filepath_obj_for_module(lbModule *m) {
 	String ext = {};
 
 	if (build_context.build_mode == BuildMode_Assembly) {
-		ext = STR_LIT(".S");
+		ext = STR_LIT("S");
+	} else if (build_context.build_mode == BuildMode_Object) {
+		// Allow a user override for the object extension.
+		ext = build_context.build_paths[BuildPath_Output].ext;
 	} else {
-		if (is_arch_wasm()) {
-			ext = STR_LIT(".wasm.o");
-		} else {
-			switch (build_context.metrics.os) {
-			case TargetOs_windows:
-				ext = STR_LIT(".obj");
-				break;
-			default:
-			case TargetOs_darwin:
-			case TargetOs_linux:
-			case TargetOs_essence:
-				ext = STR_LIT(".o");
-				break;
-
-			case TargetOs_freestanding:
-				switch (build_context.metrics.abi) {
-				default:
-				case TargetABI_Default:
-				case TargetABI_SysV:
-					ext = STR_LIT(".o");
-					break;
-				case TargetABI_Win64:
-					ext = STR_LIT(".obj");
-					break;
-				}
-				break;
-			}
-		}
+		ext = infer_object_extension_from_build_context();
 	}
 
+	path = gb_string_append_length(path, ".", 1);
 	path = gb_string_append_length(path, ext.text, ext.len);
 
 	return make_string(cast(u8 *)path, gb_string_length(path));
@@ -2814,7 +2800,6 @@ gb_internal void lb_generate_procedure(lbModule *m, lbProcedure *p) {
 		p->is_done = true;
 		m->curr_procedure = nullptr;
 	}
-	lb_end_procedure(p);
 
 	// Add Flags
 	if (p->entity && p->entity->kind == Entity_Procedure && p->entity->Procedure.is_memcpy_like) {
@@ -3123,6 +3108,7 @@ gb_internal bool lb_generate_code(lbGenerator *gen) {
 				LLVMSetInitializer(g, LLVMConstNull(lb_type(m, t)));
 				LLVMSetLinkage(g, LLVMInternalLinkage);
 				lb_make_global_private_const(g);
+				lb_set_odin_rtti_section(g);
 				return lb_addr({g, alloc_type_pointer(t)});
 			};
 
@@ -3194,24 +3180,9 @@ gb_internal bool lb_generate_code(lbGenerator *gen) {
 		lbValue g = {};
 		g.value = LLVMAddGlobal(m->mod, lb_type(m, e->type), alloc_cstring(permanent_allocator(), name));
 		g.type = alloc_type_pointer(e->type);
-		if (e->Variable.thread_local_model != "") {
-			LLVMSetThreadLocal(g.value, true);
 
-			String m = e->Variable.thread_local_model;
-			LLVMThreadLocalMode mode = LLVMGeneralDynamicTLSModel;
-			if (m == "default") {
-				mode = LLVMGeneralDynamicTLSModel;
-			} else if (m == "localdynamic") {
-				mode = LLVMLocalDynamicTLSModel;
-			} else if (m == "initialexec") {
-				mode = LLVMInitialExecTLSModel;
-			} else if (m == "localexec") {
-				mode = LLVMLocalExecTLSModel;
-			} else {
-				GB_PANIC("Unhandled thread local mode %.*s", LIT(m));
-			}
-			LLVMSetThreadLocalMode(g.value, mode);
-		}
+		lb_apply_thread_local_model(g.value, e->Variable.thread_local_model);
+
 		if (is_foreign) {
 			LLVMSetLinkage(g.value, LLVMExternalLinkage);
 			LLVMSetDLLStorageClass(g.value, LLVMDLLImportStorageClass);
@@ -3227,6 +3198,7 @@ gb_internal bool lb_generate_code(lbGenerator *gen) {
 			LLVMSetLinkage(g.value, USE_SEPARATE_MODULES ? LLVMWeakAnyLinkage : LLVMInternalLinkage);
 		}
 		lb_set_linkage_from_entity_flags(m, g.value, e->flags);
+		LLVMSetAlignment(g.value, cast(u32)type_align_of(e->type));
 		
 		if (e->Variable.link_section.len > 0) {
 			LLVMSetSection(g.value, alloc_cstring(permanent_allocator(), e->Variable.link_section));
@@ -3306,6 +3278,28 @@ gb_internal bool lb_generate_code(lbGenerator *gen) {
 		}
 	}
 
+	if (build_context.ODIN_DEBUG) {
+		// Custom `.raddbg` section for its debugger
+		if (build_context.metrics.os == TargetOs_windows) {
+			lbModule *m = default_module;
+			LLVMModuleRef mod = m->mod;
+			LLVMContextRef ctx = m->ctx;
+
+			{
+				LLVMTypeRef type = LLVMArrayType(LLVMInt8TypeInContext(ctx), 1);
+				LLVMValueRef global = LLVMAddGlobal(mod, type, "raddbg_is_attached_byte_marker");
+				LLVMSetInitializer(global, LLVMConstNull(type));
+				LLVMSetSection(global, ".raddbg");
+			}
+
+			if (gen->info->entry_point) {
+				String mangled_name = lb_get_entity_name(m, gen->info->entry_point);
+				char const *str = alloc_cstring(temporary_allocator(), mangled_name);
+				lb_add_raddbg_string(m, "entry_point: \"", str, "\"");
+			}
+		}
+	}
+
 	TIME_SECTION("LLVM Runtime Objective-C Names Creation");
 	gen->objc_names = lb_create_objc_names(default_module);
 
@@ -3319,7 +3313,7 @@ gb_internal bool lb_generate_code(lbGenerator *gen) {
 	if (build_context.ODIN_DEBUG) {
 		for (auto const &entry : builtin_pkg->scope->elements) {
 			Entity *e = entry.value;
-			add_debug_info_for_global_constant_from_entity(gen, e);
+			lb_add_debug_info_for_global_constant_from_entity(gen, e);
 		}
 	}
 
@@ -3349,6 +3343,72 @@ gb_internal bool lb_generate_code(lbGenerator *gen) {
 	if (build_context.ODIN_DEBUG) {
 		TIME_SECTION("LLVM Debug Info Complete Types and Finalize");
 		lb_debug_info_complete_types_and_finalize(gen);
+
+		// Custom `.raddbg` section for its debugger
+		if (build_context.metrics.os == TargetOs_windows) {
+			lbModule *m = default_module;
+			LLVMModuleRef mod = m->mod;
+			LLVMContextRef ctx = m->ctx;
+
+			lb_add_raddbg_string(m, "type_view: {type: \"[]?\", expr: \"array(data, len)\"}");
+			lb_add_raddbg_string(m, "type_view: {type: \"string\", expr: \"array(data, len)\"}");
+
+			// column major matrices
+			lb_add_raddbg_string(m, "type_view: {type: \"matrix[1, ?]?\",  expr: \"columns($.data, $[0])\"}");
+			lb_add_raddbg_string(m, "type_view: {type: \"matrix[2, ?]?\",  expr: \"columns($.data, $[0], $[1])\"}");
+			lb_add_raddbg_string(m, "type_view: {type: \"matrix[3, ?]?\",  expr: \"columns($.data, $[0], $[1], $[2])\"}");
+			lb_add_raddbg_string(m, "type_view: {type: \"matrix[4, ?]?\",  expr: \"columns($.data, $[0], $[1], $[2], $[3])\"}");
+			lb_add_raddbg_string(m, "type_view: {type: \"matrix[5, ?]?\",  expr: \"columns($.data, $[0], $[1], $[2], $[3], $[4])\"}");
+			lb_add_raddbg_string(m, "type_view: {type: \"matrix[6, ?]?\",  expr: \"columns($.data, $[0], $[1], $[2], $[3], $[4], $[5])\"}");
+			lb_add_raddbg_string(m, "type_view: {type: \"matrix[7, ?]?\",  expr: \"columns($.data, $[0], $[1], $[2], $[3], $[4], $[5], $[6])\"}");
+			lb_add_raddbg_string(m, "type_view: {type: \"matrix[8, ?]?\",  expr: \"columns($.data, $[0], $[1], $[2], $[3], $[4], $[5], $[6], $[7])\"}");
+			lb_add_raddbg_string(m, "type_view: {type: \"matrix[9, ?]?\",  expr: \"columns($.data, $[0], $[1], $[2], $[3], $[4], $[5], $[6], $[7], $[8])\"}");
+			lb_add_raddbg_string(m, "type_view: {type: \"matrix[10, ?]?\", expr: \"columns($.data, $[0], $[1], $[2], $[3], $[4], $[5], $[6], $[7], $[8], $[9])\"}");
+			lb_add_raddbg_string(m, "type_view: {type: \"matrix[11, ?]?\", expr: \"columns($.data, $[0], $[1], $[2], $[3], $[4], $[5], $[6], $[7], $[8], $[9], $[10])\"}");
+			lb_add_raddbg_string(m, "type_view: {type: \"matrix[12, ?]?\", expr: \"columns($.data, $[0], $[1], $[2], $[3], $[4], $[5], $[6], $[7], $[8], $[9], $[10], $[11])\"}");
+			lb_add_raddbg_string(m, "type_view: {type: \"matrix[13, ?]?\", expr: \"columns($.data, $[0], $[1], $[2], $[3], $[4], $[5], $[6], $[7], $[8], $[9], $[10], $[11], $[12])\"}");
+			lb_add_raddbg_string(m, "type_view: {type: \"matrix[14, ?]?\", expr: \"columns($.data, $[0], $[1], $[2], $[3], $[4], $[5], $[6], $[7], $[8], $[9], $[10], $[11], $[12], $[13])\"}");
+			lb_add_raddbg_string(m, "type_view: {type: \"matrix[15, ?]?\", expr: \"columns($.data, $[0], $[1], $[2], $[3], $[4], $[5], $[6], $[7], $[8], $[9], $[10], $[11], $[12], $[13], $[14])\"}");
+			lb_add_raddbg_string(m, "type_view: {type: \"matrix[16, ?]?\", expr: \"columns($.data, $[0], $[1], $[2], $[3], $[4], $[5], $[6], $[7], $[8], $[9], $[10], $[11], $[12], $[13], $[14], $[15])\"}");
+
+			// row major matrices
+			lb_add_raddbg_string(m, "type_view: {type: \"#row_major matrix[?, 1]?\",  expr: \"columns($.data, $[0])\"}");
+			lb_add_raddbg_string(m, "type_view: {type: \"#row_major matrix[?, 2]?\",  expr: \"columns($.data, $[0], $[1])\"}");
+			lb_add_raddbg_string(m, "type_view: {type: \"#row_major matrix[?, 3]?\",  expr: \"columns($.data, $[0], $[1], $[2])\"}");
+			lb_add_raddbg_string(m, "type_view: {type: \"#row_major matrix[?, 4]?\",  expr: \"columns($.data, $[0], $[1], $[2], $[3])\"}");
+			lb_add_raddbg_string(m, "type_view: {type: \"#row_major matrix[?, 5]?\",  expr: \"columns($.data, $[0], $[1], $[2], $[3], $[4])\"}");
+			lb_add_raddbg_string(m, "type_view: {type: \"#row_major matrix[?, 6]?\",  expr: \"columns($.data, $[0], $[1], $[2], $[3], $[4], $[5])\"}");
+			lb_add_raddbg_string(m, "type_view: {type: \"#row_major matrix[?, 7]?\",  expr: \"columns($.data, $[0], $[1], $[2], $[3], $[4], $[5], $[6])\"}");
+			lb_add_raddbg_string(m, "type_view: {type: \"#row_major matrix[?, 8]?\",  expr: \"columns($.data, $[0], $[1], $[2], $[3], $[4], $[5], $[6], $[7])\"}");
+			lb_add_raddbg_string(m, "type_view: {type: \"#row_major matrix[?, 9]?\",  expr: \"columns($.data, $[0], $[1], $[2], $[3], $[4], $[5], $[6], $[7], $[8])\"}");
+			lb_add_raddbg_string(m, "type_view: {type: \"#row_major matrix[?, 10]?\", expr: \"columns($.data, $[0], $[1], $[2], $[3], $[4], $[5], $[6], $[7], $[8], $[9])\"}");
+			lb_add_raddbg_string(m, "type_view: {type: \"#row_major matrix[?, 11]?\", expr: \"columns($.data, $[0], $[1], $[2], $[3], $[4], $[5], $[6], $[7], $[8], $[9], $[10])\"}");
+			lb_add_raddbg_string(m, "type_view: {type: \"#row_major matrix[?, 12]?\", expr: \"columns($.data, $[0], $[1], $[2], $[3], $[4], $[5], $[6], $[7], $[8], $[9], $[10], $[11])\"}");
+			lb_add_raddbg_string(m, "type_view: {type: \"#row_major matrix[?, 13]?\", expr: \"columns($.data, $[0], $[1], $[2], $[3], $[4], $[5], $[6], $[7], $[8], $[9], $[10], $[11], $[12])\"}");
+			lb_add_raddbg_string(m, "type_view: {type: \"#row_major matrix[?, 14]?\", expr: \"columns($.data, $[0], $[1], $[2], $[3], $[4], $[5], $[6], $[7], $[8], $[9], $[10], $[11], $[12], $[13])\"}");
+			lb_add_raddbg_string(m, "type_view: {type: \"#row_major matrix[?, 15]?\", expr: \"columns($.data, $[0], $[1], $[2], $[3], $[4], $[5], $[6], $[7], $[8], $[9], $[10], $[11], $[12], $[13], $[14])\"}");
+			lb_add_raddbg_string(m, "type_view: {type: \"#row_major matrix[?, 16]?\", expr: \"columns($.data, $[0], $[1], $[2], $[3], $[4], $[5], $[6], $[7], $[8], $[9], $[10], $[11], $[12], $[13], $[14], $[15])\"}");
+
+
+			TEMPORARY_ALLOCATOR_GUARD();
+
+			u32 global_name_index = 0;
+			for (String str = {}; mpsc_dequeue(&gen->raddebug_section_strings, &str); /**/) {
+				LLVMValueRef data = LLVMConstStringInContext(ctx, cast(char const *)str.text, cast(unsigned)str.len, false);
+				LLVMTypeRef type = LLVMTypeOf(data);
+
+				gbString global_name = gb_string_make(temporary_allocator(), "raddbg_data__");
+				global_name = gb_string_append_fmt(global_name, "%u", global_name_index);
+				global_name_index += 1;
+
+				LLVMValueRef global = LLVMAddGlobal(mod, type, global_name);
+
+				LLVMSetInitializer(global, data);
+				LLVMSetAlignment(global, 1);
+
+				LLVMSetSection(global, ".raddbg");
+			}
+		}
 	}
 
 	if (do_threading) {
@@ -3431,36 +3491,48 @@ gb_internal bool lb_generate_code(lbGenerator *gen) {
 
 
 	if (build_context.sanitizer_flags & SanitizerFlag_Address) {
-		if (build_context.metrics.os == TargetOs_windows) {
+		switch (build_context.metrics.os) {
+		case TargetOs_windows: {
 			auto paths = array_make<String>(heap_allocator(), 0, 1);
 			String path = concatenate_strings(permanent_allocator(), build_context.ODIN_ROOT, str_lit("\\bin\\llvm\\windows\\clang_rt.asan-x86_64.lib"));
 			array_add(&paths, path);
 			Entity *lib = alloc_entity_library_name(nullptr, make_token_ident("asan_lib"), nullptr, slice_from_array(paths), str_lit("asan_lib"));
 			array_add(&gen->foreign_libraries, lib);
-		} else if (build_context.metrics.os == TargetOs_darwin || build_context.metrics.os == TargetOs_linux) {
+		} break;
+		case TargetOs_darwin:
+		case TargetOs_linux:
+		case TargetOs_freebsd:
 			if (!build_context.extra_linker_flags.text) {
 				build_context.extra_linker_flags = str_lit("-fsanitize=address");
 			} else {
 				build_context.extra_linker_flags = concatenate_strings(permanent_allocator(), build_context.extra_linker_flags, str_lit(" -fsanitize=address"));
 			}
+			break;
 		}
 	}
 	if (build_context.sanitizer_flags & SanitizerFlag_Memory) {
-		if (build_context.metrics.os == TargetOs_darwin || build_context.metrics.os == TargetOs_linux) {
+		switch (build_context.metrics.os) {
+		case TargetOs_linux:
+		case TargetOs_freebsd:
 			if (!build_context.extra_linker_flags.text) {
 				build_context.extra_linker_flags = str_lit("-fsanitize=memory");
 			} else {
 				build_context.extra_linker_flags = concatenate_strings(permanent_allocator(), build_context.extra_linker_flags, str_lit(" -fsanitize=memory"));
 			}
+			break;
 		}
 	}
 	if (build_context.sanitizer_flags & SanitizerFlag_Thread) {
-		if (build_context.metrics.os == TargetOs_darwin || build_context.metrics.os == TargetOs_linux) {
+		switch (build_context.metrics.os) {
+		case TargetOs_darwin:
+		case TargetOs_linux:
+		case TargetOs_freebsd:
 			if (!build_context.extra_linker_flags.text) {
 				build_context.extra_linker_flags = str_lit("-fsanitize=thread");
 			} else {
 				build_context.extra_linker_flags = concatenate_strings(permanent_allocator(), build_context.extra_linker_flags, str_lit(" -fsanitize=thread"));
 			}
+			break;
 		}
 	}
 

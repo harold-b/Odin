@@ -134,7 +134,7 @@ _create_socket :: proc(family: Address_Family, protocol: Socket_Protocol) -> (An
 }
 
 @(private)
-_dial_tcp_from_endpoint :: proc(endpoint: Endpoint, options := default_tcp_options) -> (TCP_Socket, Network_Error) {
+_dial_tcp_from_endpoint :: proc(endpoint: Endpoint, options := DEFAULT_TCP_OPTIONS) -> (TCP_Socket, Network_Error) {
 	errno: linux.Errno
 	if endpoint.port == 0 {
 		return 0, .Port_Required
@@ -218,11 +218,11 @@ _listen_tcp :: proc(endpoint: Endpoint, backlog := 1000) -> (socket: TCP_Socket,
 }
 
 @(private)
-_bound_endpoint :: proc(sock: Any_Socket) -> (ep: Endpoint, err: Listen_Error) {
+_bound_endpoint :: proc(sock: Any_Socket) -> (ep: Endpoint, err: Socket_Info_Error) {
 	addr: linux.Sock_Addr_Any
 	errno := linux.getsockname(_unwrap_os_socket(sock), &addr)
 	if errno != .NONE {
-		err = _listen_error(errno)
+		err = _socket_info_error(errno)
 		return
 	}
 
@@ -231,7 +231,20 @@ _bound_endpoint :: proc(sock: Any_Socket) -> (ep: Endpoint, err: Listen_Error) {
 }
 
 @(private)
-_accept_tcp :: proc(sock: TCP_Socket, options := default_tcp_options) -> (tcp_client: TCP_Socket, endpoint: Endpoint, err: Accept_Error) {
+_peer_endpoint :: proc(sock: Any_Socket) -> (ep: Endpoint, err: Socket_Info_Error) {
+	addr: linux.Sock_Addr_Any
+	errno := linux.getpeername(_unwrap_os_socket(sock), &addr)
+	if errno != .NONE {
+		err = _socket_info_error(errno)
+		return
+	}
+
+	ep = _wrap_os_addr(addr)
+	return
+}
+
+@(private)
+_accept_tcp :: proc(sock: TCP_Socket, options := DEFAULT_TCP_OPTIONS) -> (tcp_client: TCP_Socket, endpoint: Endpoint, err: Accept_Error) {
 	addr: linux.Sock_Addr_Any
 	client_sock, errno := linux.accept(linux.Fd(sock), &addr)
 	if errno != .NONE {

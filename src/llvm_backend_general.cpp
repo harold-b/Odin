@@ -175,6 +175,7 @@ gb_internal bool lb_init_generator(lbGenerator *gen, Checker *c) {
 	mpsc_init(&gen->objc_selectors, heap_allocator());
 	mpsc_init(&gen->objc_classes, heap_allocator());
 	mpsc_init(&gen->objc_ivars, heap_allocator());
+	mpsc_init(&gen->raddebug_section_strings, heap_allocator());
 
 	return true;
 }
@@ -545,8 +546,11 @@ gb_internal lbValue lb_addr_get_ptr(lbProcedure *p, lbAddr const &addr) {
 		break;
 
 	case lbAddr_Swizzle:
+		GB_PANIC("lbAddr_Swizzle should be handled elsewhere");
+		break;
+
 	case lbAddr_SwizzleLarge:
-		// TOOD(bill): is this good enough logic?
+		GB_PANIC("lbAddr_SwizzleLarge should be handled elsewhere");
 		break;
 	}
 
@@ -564,10 +568,22 @@ gb_internal void lb_set_file_line_col(lbProcedure *p, Array<lbValue> arr, TokenP
 	i32 line    = pos.line;
 	i32 col     = pos.column;
 
-	if (build_context.obfuscate_source_code_locations) {
+	switch (build_context.source_code_location_info) {
+	case SourceCodeLocationInfo_Normal:
+		break;
+	case SourceCodeLocationInfo_Obfuscated:
 		file = obfuscate_string(file, "F");
 		line = obfuscate_i32(line);
 		col  = obfuscate_i32(col);
+		break;
+	case SourceCodeLocationInfo_Filename:
+		file = last_path_element(file);
+		break;
+	case SourceCodeLocationInfo_None:
+		file = str_lit("");
+		line = 0;
+		col  = 0;
+		break;
 	}
 
 	arr[0] = lb_find_or_add_entity_string(p->module, file, false);
@@ -887,8 +903,8 @@ gb_internal void lb_addr_store(lbProcedure *p, lbAddr addr, lbValue value) {
 			Type *t = base_type(type_deref(addr.addr.type));
 			GB_ASSERT(t->kind == Type_Struct && t->Struct.soa_kind != StructSoa_None);
 			lbValue len = lb_soa_struct_len(p, addr.addr);
-			if (addr.soa.index_expr != nullptr) {
-				lb_emit_bounds_check(p, ast_token(addr.soa.index_expr), index, len);
+			if (addr.soa.index_expr != nullptr && (!lb_is_const(addr.soa.index) || t->Struct.soa_kind != StructSoa_Fixed)) {
+				lb_emit_bounds_check(p, ast_token(addr.soa.index_expr), addr.soa.index, len);
 			}
 		}
 
@@ -921,7 +937,7 @@ gb_internal void lb_addr_store(lbProcedure *p, lbAddr addr, lbValue value) {
 		GB_ASSERT(value.value != nullptr);
 		value = lb_emit_conv(p, value, lb_addr_type(addr));
 
-		lbValue dst = lb_addr_get_ptr(p, addr);
+		lbValue dst = addr.addr;
 		lbValue src = lb_address_from_load_or_generate_local(p, value);
 		{
 			lbValue src_ptrs[4] = {};
@@ -947,7 +963,7 @@ gb_internal void lb_addr_store(lbProcedure *p, lbAddr addr, lbValue value) {
 		GB_ASSERT(value.value != nullptr);
 		value = lb_emit_conv(p, value, lb_addr_type(addr));
 
-		lbValue dst = lb_addr_get_ptr(p, addr);
+		lbValue dst = addr.addr;
 		lbValue src = lb_address_from_load_or_generate_local(p, value);
 		for_array(i, addr.swizzle_large.indices) {
 			lbValue src_ptr = lb_emit_array_epi(p, src, i);
@@ -2202,7 +2218,7 @@ gb_internal LLVMTypeRef lb_type_internal(lbModule *m, Type *type) {
 				field_count = 3;
 			}
 			LLVMTypeRef *fields = gb_alloc_array(permanent_allocator(), LLVMTypeRef, field_count);
-			fields[0] = LLVMPointerType(lb_type(m, type->Pointer.elem), 0);
+			fields[0] = LLVMPointerType(lb_type(m, type->SoaPointer.elem), 0);
 			if (bigger_int) {
 				fields[1] = lb_type_padding_filler(m, build_context.ptr_size, build_context.ptr_size);
 				fields[2] = LLVMIntTypeInContext(ctx, 8*cast(unsigned)build_context.int_size);
@@ -2214,6 +2230,14 @@ gb_internal LLVMTypeRef lb_type_internal(lbModule *m, Type *type) {
 
 	case Type_BitField:
 		return lb_type_internal(m, type->BitField.backing_type);
+        
+	case Type_Generic:
+		if (type->Generic.specialized) {
+			return lb_type_internal(m, type->Generic.specialized);
+		} else {
+			// For unspecialized generics, use a pointer type as a placeholder
+			return LLVMPointerType(LLVMInt8TypeInContext(m->ctx), 0);
+		}
 	}
 
 	GB_PANIC("Invalid type %s", type_to_string(type));
@@ -2379,6 +2403,29 @@ gb_internal void lb_add_attribute_to_proc_with_string(lbModule *m, LLVMValueRef 
 }
 
 
+gb_internal bool lb_apply_thread_local_model(LLVMValueRef value, String model) {
+	if (model != "") {
+		LLVMSetThreadLocal(value, true);
+
+		LLVMThreadLocalMode mode = LLVMGeneralDynamicTLSModel;
+		if (model == "default") {
+			mode = LLVMGeneralDynamicTLSModel;
+		} else if (model == "localdynamic") {
+			mode = LLVMLocalDynamicTLSModel;
+		} else if (model == "initialexec") {
+			mode = LLVMInitialExecTLSModel;
+		} else if (model == "localexec") {
+			mode = LLVMLocalExecTLSModel;
+		} else {
+			GB_PANIC("Unhandled thread local mode %.*s", LIT(model));
+		}
+		LLVMSetThreadLocalMode(value, mode);
+		return true;
+	}
+
+	return false;
+}
+
 
 gb_internal void lb_add_edge(lbBlock *from, lbBlock *to) {
 	LLVMValueRef instr = LLVMGetLastInstruction(from->block);
@@ -2517,10 +2564,13 @@ general_end:;
 		}
 	}
 
-	src_size = align_formula(src_size, src_align);
-	dst_size = align_formula(dst_size, dst_align);
+	// NOTE(laytan): even though this logic seems sound, the Address Sanitizer does not
+	// want you to load/store the space of a value that is there for alignment.
+#if 0
+	i64 aligned_src_size = align_formula(src_size, src_align);
+	i64 aligned_dst_size = align_formula(dst_size, dst_align);
 
-	if (LLVMIsALoadInst(val) && (src_size >= dst_size && src_align >= dst_align)) {
+	if (LLVMIsALoadInst(val) && (aligned_src_size >= aligned_dst_size && src_align >= dst_align)) {
 		LLVMValueRef val_ptr = LLVMGetOperand(val, 0);
 		val_ptr = LLVMBuildPointerCast(p->builder, val_ptr, LLVMPointerType(dst_type, 0), "");
 		LLVMValueRef loaded_val = OdinLLVMBuildLoad(p, dst_type, val_ptr);
@@ -2528,8 +2578,57 @@ general_end:;
 		// LLVMSetAlignment(loaded_val, gb_min(src_align, dst_align));
 
 		return loaded_val;
+	}
+#endif
+
+	if (src_size > dst_size) {
+		GB_ASSERT(p->decl_block != p->curr_block);
+		// NOTE(laytan): src is bigger than dst, need to memcpy the part of src we want.
+
+		LLVMValueRef val_ptr; 
+		if (LLVMIsALoadInst(val)) {
+			val_ptr = LLVMGetOperand(val, 0);
+		} else if (LLVMIsAAllocaInst(val)) {
+			val_ptr = LLVMBuildPointerCast(p->builder, val, LLVMPointerType(src_type, 0), "");
+		} else {
+			// NOTE(laytan): we need a pointer to memcpy from.
+			LLVMValueRef val_copy = llvm_alloca(p, src_type, src_align);
+			val_ptr = LLVMBuildPointerCast(p->builder, val_copy, LLVMPointerType(src_type, 0), "");
+			LLVMBuildStore(p->builder, val, val_ptr);
+		}
+
+		i64 max_align = gb_max(lb_alignof(src_type), lb_alignof(dst_type));
+		max_align = gb_max(max_align, 16);
+
+		LLVMValueRef ptr = llvm_alloca(p, dst_type, max_align);
+		LLVMValueRef nptr = LLVMBuildPointerCast(p->builder, ptr, LLVMPointerType(dst_type, 0), "");
+
+		LLVMTypeRef types[3] = {
+			lb_type(p->module, t_rawptr),
+			lb_type(p->module, t_rawptr),
+			lb_type(p->module, t_int)
+		};
+
+		LLVMValueRef args[4] = {
+			nptr,
+			val_ptr,
+			LLVMConstInt(LLVMIntTypeInContext(p->module->ctx, 8*cast(unsigned)build_context.int_size), dst_size, 0),
+			LLVMConstInt(LLVMInt1TypeInContext(p->module->ctx), 0, 0),
+		};
+
+		lb_call_intrinsic(
+			p,
+			"llvm.memcpy.inline",
+			args,
+			gb_count_of(args),
+			types,
+			gb_count_of(types)
+		);
+
+		return OdinLLVMBuildLoad(p, dst_type, ptr);
 	} else {
 		GB_ASSERT(p->decl_block != p->curr_block);
+		GB_ASSERT(dst_size >= src_size);
 
 		i64 max_align = gb_max(lb_alignof(src_type), lb_alignof(dst_type));
 		max_align = gb_max(max_align, 16);
@@ -2730,6 +2829,14 @@ gb_internal lbValue lb_find_procedure_value_from_entity(lbModule *m, Entity *e) 
 	ignore_body = other_module != m;
 
 	lbProcedure *missing_proc = lb_create_procedure(m, e, ignore_body);
+	if (missing_proc == nullptr) {
+		// This is an unspecialized polymorphic procedure, which should not be codegen'd
+		lbValue dummy = {};
+		dummy.value = nullptr;
+		dummy.type = nullptr;
+		return dummy;
+	}
+
 	if (ignore_body) {
 		mutex_lock(&gen->anonymous_proc_lits_mutex);
 		defer (mutex_unlock(&gen->anonymous_proc_lits_mutex));
@@ -2922,25 +3029,7 @@ gb_internal lbValue lb_find_value_from_entity(lbModule *m, Entity *e) {
 
 			lb_set_entity_from_other_modules_linkage_correctly(other_module, e, name);
 
-			if (e->Variable.thread_local_model != "") {
-				LLVMSetThreadLocal(g.value, true);
-
-				String m = e->Variable.thread_local_model;
-				LLVMThreadLocalMode mode = LLVMGeneralDynamicTLSModel;
-				if (m == "default") {
-					mode = LLVMGeneralDynamicTLSModel;
-				} else if (m == "localdynamic") {
-					mode = LLVMLocalDynamicTLSModel;
-				} else if (m == "initialexec") {
-					mode = LLVMInitialExecTLSModel;
-				} else if (m == "localexec") {
-					mode = LLVMLocalExecTLSModel;
-				} else {
-					GB_PANIC("Unhandled thread local mode %.*s", LIT(m));
-				}
-				LLVMSetThreadLocalMode(g.value, mode);
-			}
-
+			lb_apply_thread_local_model(g.value, e->Variable.thread_local_model);
 
 			return g;
 		}
@@ -3072,6 +3161,13 @@ gb_internal lbAddr lb_add_local(lbProcedure *p, Type *type, Entity *e, bool zero
 	if (e != nullptr) {
 		lb_add_entity(p->module, e, val);
 		lb_add_debug_local_variable(p, ptr, type, e->token);
+
+		// NOTE(lucas): In LLVM 20 and below we do not have the option to have asan cleanup poisoned stack
+		// locals ourselves. So we need to manually track and unpoison these locals on proc return.
+		// LLVM 21 adds the 'use-after-scope' asan option which does this for us.
+		if (build_context.sanitizer_flags & SanitizerFlag_Address && !p->entity->Procedure.no_sanitize_address) {
+			array_add(&p->asan_stack_locals, val);
+		}
 	}
 
 	if (zero_init) {

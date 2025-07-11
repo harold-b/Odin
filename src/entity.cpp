@@ -262,6 +262,8 @@ struct Entity {
 			bool    is_memcpy_like             : 1;
 			bool    uses_branch_location       : 1;
 			bool    is_anonymous               : 1;
+			bool    no_sanitize_address        : 1;
+			bool    no_sanitize_memory         : 1;
 		} Procedure;
 		struct {
 			Array<Entity *> entities;

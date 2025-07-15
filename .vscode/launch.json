@@ -35,9 +35,9 @@
         //     // "cwd": "${workspaceFolder}"
         // },
         {
-            "name": "darwodin-cmake",
-            // "type": "lldb",
-            "type": "cppdbg",
+            "name": "darwodin",
+            "type": "lldb",
+            // "type": "cppdbg",
             "osx": {
                 "MIMode": "lldb"
             },
@@ -47,8 +47,8 @@
                 "build", "samples/metal_app",
                 "-collection:samples=./samples",
                 // "-collection:root=.",
-                // "-collection:root=./darwodin-ios-lite",
-                "-collection:root=./darwodin-macos",
+                "-collection:root=./darwodin-ios",
+                // "-collection:root=./darwodin-macos",
                 "-out:.bin/main",
                 "-o:none",
                 "-debug",
@@ -57,10 +57,10 @@
                 "-show-more-timings",
                 // "-show-debug-messages",
                 "-target:darwin_arm64",
-                // "-subtarget:ios",
+                "-subtarget:iphonesimulator",
                 "-thread-count:1"
             ],
-            "preLaunchTask": "build-debug",
+            // "preLaunchTask": "build-debug",
             "cwd": "/Users/harito/projects/apps/darwodin"
             // "cwd": "${workspaceFolder}"
         },

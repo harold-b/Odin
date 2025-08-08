@@ -309,6 +309,7 @@ enum VetFlags : u64 {
 	VetFlag_Cast            = 1u<<8,
 	VetFlag_Tabs            = 1u<<9,
 	VetFlag_UnusedProcedures = 1u<<10,
+	VetFlag_ExplicitAllocators = 1u<<11,
 
 	VetFlag_Unused = VetFlag_UnusedVariables|VetFlag_UnusedImports,
 
@@ -342,6 +343,8 @@ u64 get_vet_flag_from_name(String const &name) {
 		return VetFlag_Tabs;
 	} else if (name == "unused-procedures") {
 		return VetFlag_UnusedProcedures;
+	} else if (name == "explicit-allocators") {
+		return VetFlag_ExplicitAllocators;
 	}
 	return VetFlag_NONE;
 }
@@ -1086,7 +1089,7 @@ gb_internal String internal_odin_root_dir(void) {
 	text = gb_alloc_array(permanent_allocator(), wchar_t, len+1);
 
 	GetModuleFileNameW(nullptr, text, cast(int)len);
-	path = string16_to_string(heap_allocator(), make_string16(text, len));
+	path = string16_to_string(heap_allocator(), make_string16(cast(u16 *)text, len));
 
 	for (i = path.len-1; i >= 0; i--) {
 		u8 c = path[i];
@@ -1384,14 +1387,14 @@ gb_internal String path_to_fullpath(gbAllocator a, String s, bool *ok_) {
 
 	mutex_lock(&fullpath_mutex);
 
-	len = GetFullPathNameW(&string16[0], 0, nullptr, nullptr);
+	len = GetFullPathNameW(cast(wchar_t *)&string16[0], 0, nullptr, nullptr);
 	if (len != 0) {
 		wchar_t *text = gb_alloc_array(permanent_allocator(), wchar_t, len+1);
-		GetFullPathNameW(&string16[0], len, text, nullptr);
+		GetFullPathNameW(cast(wchar_t *)&string16[0], len, text, nullptr);
 		mutex_unlock(&fullpath_mutex);
 
 		text[len] = 0;
-		result = string16_to_string(a, make_string16(text, len));
+		result = string16_to_string(a, make_string16(cast(u16 *)text, len));
 		result = string_trim_whitespace(result);
 
 		// Replace Windows style separators
@@ -1884,6 +1887,13 @@ gb_internal void init_build_context(TargetMetrics *cross_target, Subtarget subta
 			str_lit("-target "), bc->metrics.target_triplet, str_lit(" "));
 	} else if (is_arch_wasm()) {
 		gbString link_flags = gb_string_make(heap_allocator(), " ");
+
+		// NOTE(laytan): Put the stack first in the memory,
+		// causing a stack overflow to error immediately instead of corrupting globals.
+		link_flags = gb_string_appendc(link_flags, "--stack-first ");
+		// NOTE(laytan): default stack size is 64KiB, up to a more reasonable 1MiB.
+		link_flags = gb_string_appendc(link_flags, "-z stack-size=1048576 ");
+
 		// link_flags = gb_string_appendc(link_flags, "--export-all ");
 		// link_flags = gb_string_appendc(link_flags, "--export-table ");
 		// if (bc->metrics.arch == TargetArch_wasm64) {

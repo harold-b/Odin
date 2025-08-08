@@ -2106,6 +2106,9 @@ gb_internal bool check_representable_as_constant(CheckerContext *c, ExactValue i
 	} else if (is_type_boolean(type)) {
 		return in_value.kind == ExactValue_Bool;
 	} else if (is_type_string(type)) {
+		if (in_value.kind == ExactValue_String16) {
+			return is_type_string16(type) || is_type_cstring16(type);
+		}
 		return in_value.kind == ExactValue_String;
 	} else if (is_type_integer(type) || is_type_rune(type)) {
 		if (in_value.kind == ExactValue_Bool) {
@@ -2318,6 +2321,9 @@ gb_internal bool check_representable_as_constant(CheckerContext *c, ExactValue i
 			// return true;
 		}
 		if (in_value.kind == ExactValue_String) {
+			return false;
+		}
+		if (in_value.kind == ExactValue_String16) {
 			return false;
 		}
 		if (out_value) *out_value = in_value;
@@ -2862,6 +2868,14 @@ gb_internal void add_comparison_procedures_for_fields(CheckerContext *c, Type *t
 			add_package_dependency(c, "runtime", "string_eq");
 			add_package_dependency(c, "runtime", "string_ne");
 			break;
+		case Basic_cstring16:
+			add_package_dependency(c, "runtime", "cstring16_eq");
+			add_package_dependency(c, "runtime", "cstring16_ne");
+			break;
+		case Basic_string16:
+			add_package_dependency(c, "runtime", "string16_eq");
+			add_package_dependency(c, "runtime", "string16_ne");
+			break;
 		}
 		break;
 	case Type_Struct:
@@ -3034,6 +3048,24 @@ gb_internal void check_comparison(CheckerContext *c, Ast *node, Operand *x, Oper
 				case Token_Gt:    add_package_dependency(c, "runtime", "cstring_gt"); break;
 				case Token_LtEq:  add_package_dependency(c, "runtime", "cstring_le"); break;
 				case Token_GtEq:  add_package_dependency(c, "runtime", "cstring_gt"); break;
+				}
+			} else if (is_type_cstring16(x->type) && is_type_cstring16(y->type)) {
+				switch (op) {
+				case Token_CmpEq: add_package_dependency(c, "runtime", "cstring16_eq"); break;
+				case Token_NotEq: add_package_dependency(c, "runtime", "cstring16_ne"); break;
+				case Token_Lt:    add_package_dependency(c, "runtime", "cstring16_lt"); break;
+				case Token_Gt:    add_package_dependency(c, "runtime", "cstring16_gt"); break;
+				case Token_LtEq:  add_package_dependency(c, "runtime", "cstring16_le"); break;
+				case Token_GtEq:  add_package_dependency(c, "runtime", "cstring16_gt"); break;
+				}
+			} else if (is_type_string16(x->type) || is_type_string16(y->type)) {
+				switch (op) {
+				case Token_CmpEq: add_package_dependency(c, "runtime", "string16_eq"); break;
+				case Token_NotEq: add_package_dependency(c, "runtime", "string16_ne"); break;
+				case Token_Lt:    add_package_dependency(c, "runtime", "string16_lt"); break;
+				case Token_Gt:    add_package_dependency(c, "runtime", "string16_gt"); break;
+				case Token_LtEq:  add_package_dependency(c, "runtime", "string16_le"); break;
+				case Token_GtEq:  add_package_dependency(c, "runtime", "string16_gt"); break;
 				}
 			} else if (is_type_string(x->type) || is_type_string(y->type)) {
 				switch (op) {
@@ -3340,6 +3372,11 @@ gb_internal bool check_is_castable_to(CheckerContext *c, Operand *operand, Type 
 		return true;
 	}
 
+	// []u16 <-> string16 (not cstring16)
+	if (is_type_u16_slice(src) && (is_type_string16(dst) && !is_type_cstring16(dst))) {
+		return true;
+	}
+
 	// cstring -> string
 	if (are_types_identical(src, t_cstring) && are_types_identical(dst, t_string)) {
 		if (operand->mode != Addressing_Constant) {
@@ -3347,6 +3384,14 @@ gb_internal bool check_is_castable_to(CheckerContext *c, Operand *operand, Type 
 		}
 		return true;
 	}
+	// cstring16 -> string16
+	if (are_types_identical(src, t_cstring16) && are_types_identical(dst, t_string16)) {
+		if (operand->mode != Addressing_Constant) {
+			add_package_dependency(c, "runtime", "cstring16_to_string16");
+		}
+		return true;
+	}
+
 	// cstring -> ^u8
 	if (are_types_identical(src, t_cstring) && is_type_u8_ptr(dst)) {
 		return !is_constant;
@@ -3372,6 +3417,34 @@ gb_internal bool check_is_castable_to(CheckerContext *c, Operand *operand, Type 
 	if (is_type_rawptr(src) && are_types_identical(dst, t_cstring)) {
 		return !is_constant;
 	}
+
+	// cstring -> ^u16
+	if (are_types_identical(src, t_cstring16) && is_type_u16_ptr(dst)) {
+		return !is_constant;
+	}
+	// cstring -> [^]u16
+	if (are_types_identical(src, t_cstring16) && is_type_u16_multi_ptr(dst)) {
+		return !is_constant;
+	}
+	// cstring16 -> rawptr
+	if (are_types_identical(src, t_cstring16) && is_type_rawptr(dst)) {
+		return !is_constant;
+	}
+
+
+	// ^u16 -> cstring16
+	if (is_type_u16_ptr(src) && are_types_identical(dst, t_cstring16)) {
+		return !is_constant;
+	}
+	// [^]u16 -> cstring
+	if (is_type_u16_multi_ptr(src) && are_types_identical(dst, t_cstring16)) {
+		return !is_constant;
+	}
+	// rawptr -> cstring16
+	if (is_type_rawptr(src) && are_types_identical(dst, t_cstring16)) {
+		return !is_constant;
+	}
+
 	// proc <-> proc
 	if (is_type_proc(src) && is_type_proc(dst)) {
 		if (is_type_polymorphic(dst)) {
@@ -4558,6 +4631,8 @@ gb_internal void convert_to_typed(CheckerContext *c, Operand *operand, Type *tar
 					// target_type = t_untyped_nil;
 				} else if (is_type_cstring(target_type)) {
 					// target_type = t_untyped_nil;
+				} else if (is_type_cstring16(target_type)) {
+					// target_type = t_untyped_nil;
 				} else if (!type_has_nil(target_type)) {
 					operand->mode = Addressing_Invalid;
 					convert_untyped_error(c, operand, target_type);
@@ -4582,6 +4657,13 @@ gb_internal void convert_to_typed(CheckerContext *c, Operand *operand, Type *tar
 				} else if (is_type_rune_array(t)) {
 					isize rune_count = gb_utf8_strnlen(s.text, s.len);
 					if (rune_count == t->Array.count) {
+						break;
+					}
+				}
+			} else if (operand->value.kind == ExactValue_String16) {
+				String16 s = operand->value.value_string16;
+				if (is_type_u16_array(t)) {
+					if (s.len == t->Array.count) {
 						break;
 					}
 				}
@@ -4911,6 +4993,12 @@ gb_internal ExactValue get_constant_field_single(CheckerContext *c, ExactValue v
 	if (value.kind == ExactValue_String) {
 		GB_ASSERT(0 <= index && index < value.value_string.len);
 		u8 val = value.value_string[index];
+		if (success_) *success_ = true;
+		if (finish_) *finish_ = true;
+		return exact_value_u64(val);
+	} else if (value.kind == ExactValue_String16) {
+		GB_ASSERT(0 <= index && index < value.value_string.len);
+		u16 val = value.value_string16[index];
 		if (success_) *success_ = true;
 		if (finish_) *finish_ = true;
 		return exact_value_u64(val);
@@ -5763,22 +5851,6 @@ gb_internal bool check_identifier_exists(Scope *s, Ast *node, bool nested = fals
 	return false;
 }
 
-gb_internal bool check_no_copy_assignment(Operand const &o, String const &context) {
-	if (o.type && is_type_no_copy(o.type)) {
-		Ast *expr = unparen_expr(o.expr);
-		if (expr && o.mode != Addressing_Constant && o.mode != Addressing_Type) {
-			if (expr->kind == Ast_CallExpr) {
-				// Okay
-			} else {
-				error(o.expr, "Invalid use of #no_copy value in %.*s", LIT(context));
-				return true;
-			}
-		}
-	}
-	return false;
-}
-
-
 gb_internal bool check_assignment_arguments(CheckerContext *ctx, Array<Operand> const &lhs, Array<Operand> *operands, Slice<Ast *> const &rhs) {
 	bool optional_ok = false;
 	isize tuple_index = 0;
@@ -5849,7 +5921,6 @@ gb_internal bool check_assignment_arguments(CheckerContext *ctx, Array<Operand> 
 			for (Entity *e : tuple->variables) {
 				o.type = e->type;
 				array_add(operands, o);
-				check_no_copy_assignment(o, str_lit("assignment"));
 			}
 
 			tuple_index += tuple->variables.count;
@@ -6236,29 +6307,46 @@ gb_internal CallArgumentError check_call_arguments_internal(CheckerContext *c, A
 
 	}
 
-	for (Operand const &o : ordered_operands) {
-		if (o.mode != Addressing_Invalid) {
-			check_no_copy_assignment(o, str_lit("procedure call expression"));
-		}
-	}
-
 	for (isize i = 0; i < pt->param_count; i++) {
 		if (!visited[i]) {
 			Entity *e = pt->params->Tuple.variables[i];
+			bool context_allocator_error = false;
 			if (e->kind == Entity_Variable) {
 				if (e->Variable.param_value.kind != ParameterValue_Invalid) {
-					ordered_operands[i].mode = Addressing_Value;
-					ordered_operands[i].type = e->type;
-					ordered_operands[i].expr = e->Variable.param_value.original_ast_expr;
+					if (ast_file_vet_explicit_allocators(c->file)) {
+						// NOTE(lucas): check if we are trying to default to context.allocator or context.temp_allocator
+						if (e->Variable.param_value.original_ast_expr->kind == Ast_SelectorExpr) {
+							auto& expr = e->Variable.param_value.original_ast_expr->SelectorExpr.expr;
+							auto& selector = e->Variable.param_value.original_ast_expr->SelectorExpr.selector;
+							if (expr->kind == Ast_Implicit &&
+								expr->Implicit.string == STR_LIT("context") &&
+								selector->kind == Ast_Ident &&
+								(selector->Ident.token.string == STR_LIT("allocator") ||
+      								selector->Ident.token.string == STR_LIT("temp_allocator"))) {
+								context_allocator_error = true;
+							}
+						}
+					}
 
-					dummy_argument_count += 1;
-					score += assign_score_function(1);
-					continue;
+					if (!context_allocator_error) {
+						ordered_operands[i].mode = Addressing_Value;
+						ordered_operands[i].type = e->type;
+						ordered_operands[i].expr = e->Variable.param_value.original_ast_expr;
+
+						dummy_argument_count += 1;
+						score += assign_score_function(1);
+						continue;
+					}
 				}
 			}
 
 			if (show_error) {
-				if (e->kind == Entity_TypeName) {
+				if (context_allocator_error) {
+					gbString str = type_to_string(e->type);
+					error(call, "Parameter '%.*s' of type '%s' must be explicitly provided in procedure call",
+					      LIT(e->token.string), str);
+					gb_string_free(str);
+				} else if (e->kind == Entity_TypeName) {
 					error(call, "Type parameter '%.*s' is missing in procedure call",
 					      LIT(e->token.string));
 				} else if (e->kind == Entity_Constant && e->Constant.value.kind != ExactValue_Invalid) {
@@ -6533,7 +6621,7 @@ gb_internal bool evaluate_where_clauses(CheckerContext *ctx, Ast *call_expr, Sco
 							Entity *e = entry.value;
 							switch (e->kind) {
 							case Entity_TypeName: {
-								if (print_count == 0) error_line("\n\tWith the following definitions:\n");
+								// if (print_count == 0) error_line("\n\tWith the following definitions:\n");
 
 								gbString str = type_to_string(e->type);
 								error_line("\t\t%.*s :: %s;\n", LIT(e->token.string), str);
@@ -8226,12 +8314,23 @@ gb_internal bool check_set_index_data(Operand *o, Type *t, bool indirection, i64
 	case Type_Basic:
 		if (t->Basic.kind == Basic_string) {
 			if (o->mode == Addressing_Constant) {
+				GB_ASSERT(o->value.kind == ExactValue_String);
 				*max_count = o->value.value_string.len;
 			}
 			if (o->mode != Addressing_Constant) {
 				o->mode = Addressing_Value;
 			}
 			o->type = t_u8;
+			return true;
+		} else if (t->Basic.kind == Basic_string16) {
+			if (o->mode == Addressing_Constant) {
+				GB_ASSERT(o->value.kind == ExactValue_String16);
+				*max_count = o->value.value_string16.len;
+			}
+			if (o->mode != Addressing_Constant) {
+				o->mode = Addressing_Value;
+			}
+			o->type = t_u16;
 			return true;
 		} else if (t->Basic.kind == Basic_UntypedString) {
 			if (o->mode == Addressing_Constant) {
@@ -10312,51 +10411,47 @@ gb_internal ExprKind check_compound_literal(CheckerContext *c, Operand *o, Ast *
 			is_constant = false;
 		}
 
-		if (cl->elems[0]->kind == Ast_FieldValue) {
-			error(cl->elems[0], "'field = value' in a bit_set a literal is not allowed");
-			is_constant = false;
-		} else {
-			for (Ast *elem : cl->elems) {
-				if (elem->kind == Ast_FieldValue) {
-					error(elem, "'field = value' in a bit_set a literal is not allowed");
+		for (Ast *elem : cl->elems) {
+			if (elem->kind == Ast_FieldValue) {
+				error(elem, "'field = value' in a bit_set literal is not allowed");
+				is_constant = false;
+				continue;
+			}
+
+			check_expr_with_type_hint(c, o, elem, et);
+
+			if (is_constant) {
+				is_constant = o->mode == Addressing_Constant;
+			}
+
+			if (elem->kind == Ast_BinaryExpr) {
+				switch (elem->BinaryExpr.op.kind) {
+				case Token_Or:
+					{
+						gbString x = expr_to_string(elem->BinaryExpr.left);
+						gbString y = expr_to_string(elem->BinaryExpr.right);
+						gbString e = expr_to_string(elem);
+						error(elem, "Was the following intended? '%s, %s'; if not, surround the expression with parentheses '(%s)'", x, y, e);
+						gb_string_free(e);
+						gb_string_free(y);
+						gb_string_free(x);
+					}
+					break;
+				}
+			}
+
+			check_assignment(c, o, t->BitSet.elem, str_lit("bit_set literal"));
+			if (o->mode == Addressing_Constant) {
+				i64 lower = t->BitSet.lower;
+				i64 upper = t->BitSet.upper;
+				i64 v = exact_value_to_i64(o->value);
+				if (lower <= v && v <= upper) {
+					// okay
+				} else {
+					gbString s = expr_to_string(o->expr);
+					error(elem, "Bit field value out of bounds, %s (%lld) not in the range %lld .. %lld", s, v, lower, upper);
+					gb_string_free(s);
 					continue;
-				}
-
-				check_expr_with_type_hint(c, o, elem, et);
-
-				if (is_constant) {
-					is_constant = o->mode == Addressing_Constant;
-				}
-
-				if (elem->kind == Ast_BinaryExpr) {
-					switch (elem->BinaryExpr.op.kind) {
-					case Token_Or:
-						{
-							gbString x = expr_to_string(elem->BinaryExpr.left);
-							gbString y = expr_to_string(elem->BinaryExpr.right);
-							gbString e = expr_to_string(elem);
-							error(elem, "Was the following intended? '%s, %s'; if not, surround the expression with parentheses '(%s)'", x, y, e);
-							gb_string_free(e);
-							gb_string_free(y);
-							gb_string_free(x);
-						}
-						break;
-					}
-				}
-
-				check_assignment(c, o, t->BitSet.elem, str_lit("bit_set literal"));
-				if (o->mode == Addressing_Constant) {
-					i64 lower = t->BitSet.lower;
-					i64 upper = t->BitSet.upper;
-					i64 v = exact_value_to_i64(o->value);
-					if (lower <= v && v <= upper) {
-						// okay
-					} else {
-						gbString s = expr_to_string(o->expr);
-						error(elem, "Bit field value out of bounds, %s (%lld) not in the range %lld .. %lld", s, v, lower, upper);
-						gb_string_free(s);
-						continue;
-					}
 				}
 			}
 		}
@@ -10883,7 +10978,15 @@ gb_internal ExprKind check_slice_expr(CheckerContext *c, Operand *o, Ast *node, 
 		if (t->Basic.kind == Basic_string || t->Basic.kind == Basic_UntypedString) {
 			valid = true;
 			if (o->mode == Addressing_Constant) {
+				GB_ASSERT(o->value.kind == ExactValue_String);
 				max_count = o->value.value_string.len;
+			}
+			o->type = type_deref(o->type);
+		} else if (t->Basic.kind == Basic_string16) {
+			valid = true;
+			if (o->mode == Addressing_Constant) {
+				GB_ASSERT(o->value.kind == ExactValue_String16);
+				max_count = o->value.value_string16.len;
 			}
 			o->type = type_deref(o->type);
 		}
@@ -11040,15 +11143,21 @@ gb_internal ExprKind check_slice_expr(CheckerContext *c, Operand *o, Ast *node, 
 			o->expr = node;
 			return kind;
 		}
-
-		String s = {};
-		if (o->value.kind == ExactValue_String) {
-			s = o->value.value_string;
-		}
-
 		o->mode = Addressing_Constant;
 		o->type = t;
-		o->value = exact_value_string(substring(s, cast(isize)indices[0], cast(isize)indices[1]));
+
+		if (o->value.kind == ExactValue_String16) {
+			String16 s = o->value.value_string16;
+
+			o->value = exact_value_string16(substring(s, cast(isize)indices[0], cast(isize)indices[1]));
+		} else {
+			String s = {};
+			if (o->value.kind == ExactValue_String) {
+				s = o->value.value_string;
+			}
+
+			o->value = exact_value_string(substring(s, cast(isize)indices[0], cast(isize)indices[1]));
+		}
 	}
 	return kind;
 }
@@ -11137,6 +11246,7 @@ gb_internal ExprKind check_expr_base_internal(CheckerContext *c, Operand *o, Ast
 		Type *t = t_invalid;
 		switch (node->tav.value.kind) {
 		case ExactValue_String:     t = t_untyped_string;     break;
+		case ExactValue_String16:   t = t_string16;           break; // TODO(bill): determine this correctly
 		case ExactValue_Float:      t = t_untyped_float;      break;
 		case ExactValue_Complex:    t = t_untyped_complex;    break;
 		case ExactValue_Quaternion: t = t_untyped_quaternion; break;
@@ -11573,6 +11683,8 @@ gb_internal bool is_exact_value_zero(ExactValue const &v) {
 		return !v.value_bool;
 	case ExactValue_String:
 		return v.value_string.len == 0;
+	case ExactValue_String16:
+		return v.value_string16.len == 0;
 	case ExactValue_Integer:
 		return big_int_is_zero(&v.value_integer);
 	case ExactValue_Float:

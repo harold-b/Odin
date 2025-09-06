@@ -565,6 +565,26 @@ gb_internal u64 check_feature_flags(CheckerContext *c, Ast *node) {
 	return 0;
 }
 
+gb_internal u64 check_feature_flags(Entity *e) {
+	if (e == nullptr) {
+		return 0;
+	}
+	AstFile *file = nullptr;
+	if (e->file == nullptr) {
+		file = e->file;
+	}
+	if (file == nullptr) {
+		if (e->decl_info && e->decl_info->decl_node) {
+			file = e->decl_info->decl_node->file();
+		}
+	}
+	if (file != nullptr && file->feature_flags_set) {
+		return file->feature_flags;
+	}
+	return 0;
+}
+
+
 
 enum VettedEntityKind {
 	VettedEntity_Invalid,
@@ -1431,6 +1451,9 @@ gb_internal void init_checker_info(CheckerInfo *i) {
 	mpsc_init(&i->foreign_decls_to_check, a); // 1<<10);
 	mpsc_init(&i->intrinsics_entry_point_usage, a); // 1<<10); // just waste some memory here, even if it probably never used
 
+	mpsc_init(&i->raddbg_type_views_queue, a);
+	array_init(&i->raddbg_type_views, a);
+
 	string_map_init(&i->load_directory_cache);
 	map_init(&i->load_directory_map);
 }
@@ -1458,6 +1481,9 @@ gb_internal void destroy_checker_info(CheckerInfo *i) {
 	mpsc_destroy(&i->required_foreign_imports_through_force_queue);
 	mpsc_destroy(&i->foreign_imports_to_check_fullpaths);
 	mpsc_destroy(&i->foreign_decls_to_check);
+
+	mpsc_destroy(&i->raddbg_type_views_queue);
+	array_free(&i->raddbg_type_views);
 
 	map_destroy(&i->objc_msgSend_types);
 	string_set_destroy(&i->obcj_class_name_set);
@@ -1771,6 +1797,9 @@ gb_internal void add_type_and_value(CheckerContext *ctx, Ast *expr, AddressingMo
 		}
 
 		expr = unparen_expr(expr);
+		if (expr == nullptr) {
+			break;
+		};
 	}
 	mutex_unlock(mutex);
 }
@@ -2675,6 +2704,15 @@ gb_internal void generate_minimum_dependency_set_internal(Checker *c, Entity *st
 					is_init = false;
 				}
 
+				u64 feature_flags = check_feature_flags(e);
+				if ((feature_flags & OptInFeatureFlag_GlobalContext) == 0) {
+					if (t->Proc.calling_convention != ProcCC_Contextless) {
+						ERROR_BLOCK();
+						error(e->token, "@(init) procedures must be declared as \"contextless\"");
+						error_line("\tSuggestion: this can be bypassed, for the time being, with '#+feature global-context'");
+					}
+				}
+
 				if ((e->scope->flags & (ScopeFlag_File|ScopeFlag_Pkg)) == 0) {
 					error(e->token, "@(init) procedures must be declared at the file scope");
 					is_init = false;
@@ -2688,6 +2726,7 @@ gb_internal void generate_minimum_dependency_set_internal(Checker *c, Entity *st
 				if (is_blank_ident(e->token)) {
 					error(e->token, "An @(init) procedure must not use a blank identifier as its name");
 				}
+
 
 				if (is_init) {
 					add_dependency_to_set(c, e);
@@ -2704,6 +2743,15 @@ gb_internal void generate_minimum_dependency_set_internal(Checker *c, Entity *st
 					error(e->token, "@(fini) procedures must have a signature type with no parameters nor results, got %s", str);
 					gb_string_free(str);
 					is_fini = false;
+				}
+
+				u64 feature_flags = check_feature_flags(e);
+				if ((feature_flags & OptInFeatureFlag_GlobalContext) == 0) {
+					if (t->Proc.calling_convention != ProcCC_Contextless) {
+						ERROR_BLOCK();
+						error(e->token, "@(fini) procedures must be declared as \"contextless\"");
+						error_line("\tSuggestion: this can be bypassed, for the time being, with '#+feature global-context'");
+					}
 				}
 
 				if ((e->scope->flags & (ScopeFlag_File|ScopeFlag_Pkg)) == 0) {
@@ -4027,6 +4075,21 @@ gb_internal DECL_ATTRIBUTE_PROC(type_decl_attribute) {
 
 			return true;
 		}
+	} else if (name == "raddbg_type_view") {
+		ExactValue ev = check_decl_attribute_value(c, value);
+		if (ev.kind == ExactValue_Invalid) {
+			ac->raddbg_type_view = true;
+		} else if (ev.kind == ExactValue_String) {
+			ac->raddbg_type_view = true;
+			ac->raddbg_type_view_string = ev.value_string;
+
+			if (ev.value_string.len == 0) {
+				error(elem, "Expected a non-empty string for '%.*s'", LIT(name));
+			}
+		} else {
+			error(elem, "Expected a string or no value for '%.*s'", LIT(name));
+		}
+		return true;
 	}
 	return false;
 }
@@ -6521,6 +6584,271 @@ gb_internal void check_deferred_procedures(Checker *c) {
 
 }
 
+gb_internal void handle_raddbg_type_view(Checker *c, RaddbgTypeView const &type_view) {
+	auto const struct_tag_lookup = [](String tag, char const *key_c, String *value_) -> bool {
+		String t = tag;
+		String key = make_string_c(key_c);
+		while (t.len != 0) {
+			isize i = 0;
+			while (i < t.len && t[i] == ' ') { // Skip whitespace
+				i += 1;
+			}
+			t.text += i;
+			t.len  -= i;
+			if (t.len == 0) {
+				break;
+			}
+
+			i = 0;
+
+			while (i < t.len) {
+				u8 c = t[i];
+				if (c == ':' || c == '"') {
+					break;
+				} else if ((0 <= c && c < ' ') || (0x7f <= c && c <= 0x9f)) {
+					// break if control character is found
+					break;
+				}
+				i += 1;
+			}
+
+			if (i == 0) {
+				break;
+			}
+			if (i+1 >= t.len) {
+				break;
+			}
+			if (t[i] != ':' || t[i+1] != '"') {
+				break;
+			}
+			String name = {t.text, i};
+			t = {t.text+i+1, t.len-(i+1)};
+
+			i = 1;
+			while (i < t.len && t[i] != '"') { // find closing quote
+				if (t[i] == '\\') {
+					i += 1; // Skip escaped characters
+				}
+				i += 1;
+			}
+			if (i >= t.len) {
+				break;
+			}
+
+			String value = {t.text, i+1};
+			t = {t.text+i+1, t.len-(i+1)};
+
+			if (key == name) {
+				value = {value.text+1, i-1};
+				value = string_trim_whitespace(value);
+				if (value_) *value_ = value;
+				return true;
+			}
+		}
+		return false;
+	};
+
+	auto const parse_int = [](String s, isize *offset_, u64 *result_) -> bool {
+		isize offset = *offset_;
+		isize new_offset = *offset_;
+
+		u64 result = 0;
+
+		while (new_offset < s.len) {
+			u8 c = s[new_offset];
+			if (!('0' <= c && c <= '9')) {
+				break;
+			}
+
+			new_offset += 1;
+			result *= 10;
+			result += u64(c)-'0';
+		}
+
+		*offset_ = new_offset;
+		*result_ = result;
+		return new_offset > offset;
+	};
+
+	Type *type = type_view.type;
+	if (type == nullptr || type == t_invalid) {
+		return;
+	}
+	String view = type_view.view;
+	if (view.len != 0) {
+		array_add(&c->info.raddbg_type_views, RaddbgTypeView{type, view});
+		return;
+	}
+
+	// NOTE(bill): Generate one automatically from the struct field tags if they exist
+	//             If it cannot be generated, it'll be ignored/err
+
+	Type *bt = base_type(type);
+	if (is_type_struct(type)) {
+		GB_ASSERT(bt->kind == Type_Struct);
+		if (bt->Struct.tags != nullptr) {
+			bool found_any = false;
+
+			for (isize i = 0; i < bt->Struct.fields.count; i++) {
+				String tag = bt->Struct.tags[i];
+				String value = {};
+				if (struct_tag_lookup(tag, "raddbg", &value)) {
+					found_any = true;
+				} else if (struct_tag_lookup(tag, "fmt", &value)) {
+					found_any = true;
+				}
+			}
+
+			if (!found_any) {
+				return;
+			}
+
+			gbString s = gb_string_make(heap_allocator(), "");
+
+			s = gb_string_appendc(s, "rows($");
+
+			for (isize i = 0; i < bt->Struct.fields.count; i++) {
+				Entity *field = bt->Struct.fields[i];
+				GB_ASSERT(field != nullptr);
+				String name = field->token.string;
+				String tag = bt->Struct.tags[i];
+				String value = {};
+				bool custom_rule = false;
+
+				bool raddbg_seen = false;
+				if (struct_tag_lookup(tag, "raddbg", &value)) {
+					raddbg_seen = true;
+					if (value == "-") {
+						// Ignore this field entirely;
+						continue;
+					}
+				}
+
+				s = gb_string_appendc(s, ", ");
+
+				if (raddbg_seen) {
+					if (value == "") {
+						// ignore
+					} else {
+						s = gb_string_append_length(s, value.text, value.len);
+						custom_rule = true;
+					}
+				} else if (struct_tag_lookup(tag, "fmt", &value)) {
+					if (value == "" || value == "-")  {
+						// ignore
+					} else {
+						auto p = string_partition(value, make_string_c(","));
+						String head = p.head;
+						String tail = p.tail;
+
+						isize i = 0;
+
+						for (bool ok = true; ok && i < head.len; i += 1) {
+							switch (head[i]) {
+							case '+':
+							case '-':
+							case ' ':
+							case '#':
+							case '0':
+								break;
+							default:
+								i -= 1;
+								ok = false;
+								break;
+							}
+						}
+
+						u64 prec = 0;
+						u64 width = 0;
+						bool width_ok = parse_int(head, &i, &width);
+						bool prec_ok = false;
+						if (i < head.len && head[i] == '.') {
+							i += 1;
+							prec_ok = parse_int(head, &i, &prec);
+						}
+
+
+						Rune verb = 0;
+						if (i >= head.len || head[i] == ' ') {
+							verb = 'v';
+						} else {
+							utf8_decode(head.text+i, head.len-i, &verb);
+						}
+
+						isize paren_count = 0;
+
+
+						if (width_ok) {
+							s = gb_string_appendc(s, "digits(");
+							custom_rule = true;
+						}
+
+						switch (verb) {
+						case 'b':
+							s = gb_string_appendc(s, "bin(");
+							paren_count += 1;
+							break;
+						case 'd':
+							s = gb_string_appendc(s, "dec(");
+							paren_count += 1;
+							break;
+						case 'x':
+						case 'X':
+							s = gb_string_appendc(s, "hex(");
+							paren_count += 1;
+							break;
+						case 'o':
+							s = gb_string_appendc(s, "oct(");
+							paren_count += 1;
+							break;
+						}
+
+
+						if (tail.len != 0 && tail != "0") {
+							s = gb_string_appendc(s, "array(");
+							s = gb_string_append_length(s, name.text, name.len);
+							if (is_type_slice(field->type) || is_type_dynamic_array(field->type)) {
+								s = gb_string_appendc(s, ".data");
+							}
+							s = gb_string_appendc(s, ", ");
+							s = gb_string_append_length(s, tail.text, tail.len);
+							s = gb_string_appendc(s, ")");
+							custom_rule = true;
+						} else {
+							s = gb_string_append_length(s, name.text, name.len);
+							custom_rule = true;
+						}
+
+
+						for (isize j = 0; j < paren_count; j++) {
+							s = gb_string_appendc(s, ")");
+							custom_rule = true;
+						}
+						if (width_ok) {
+							s = gb_string_append_fmt(s, ", %llu)", cast(unsigned long long)width);
+						}
+					}
+				}
+
+				if (!custom_rule) {
+					s = gb_string_append_length(s, name.text, name.len);
+				}
+			}
+
+			s = gb_string_appendc(s, ")");
+
+			view = make_string((u8 const *)s, gb_string_length(s));
+		}
+	}
+
+	if (view.len == 0) {
+		// Ignore the type, it didn't anything custom
+		return;
+	}
+
+	array_add(&c->info.raddbg_type_views, RaddbgTypeView{type, view});
+}
+
 gb_internal void check_objc_context_provider_procedures(Checker *c) {
 	for (Entity *e = nullptr; mpsc_dequeue(&c->procs_with_objc_context_provider_to_check, &e); /**/) {
 		GB_ASSERT(e->kind == Entity_TypeName);
@@ -6996,6 +7324,11 @@ gb_internal void check_parsed_files(Checker *c) {
 				}
 			}
 		}
+	}
+
+	TIME_SECTION("collate type info stuff");
+	for (RaddbgTypeView type_view; mpsc_dequeue(&c->info.raddbg_type_views_queue, &type_view); /**/) {
+		handle_raddbg_type_view(c, type_view);
 	}
 
 

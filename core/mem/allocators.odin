@@ -2331,7 +2331,7 @@ buddy_allocator_alloc_bytes_non_zeroed :: proc(b: ^Buddy_Allocator, size: uint) 
 		}
 		found.is_free = false
 		data := ([^]byte)(found)[b.alignment:][:size]
-		assert(cast(uintptr)raw_data(data)+cast(uintptr)size < cast(uintptr)buddy_block_next(found), "Buddy_Allocator has made an allocation which overlaps a block header.")
+		assert(cast(uintptr)raw_data(data)+cast(uintptr)(size-1) < cast(uintptr)buddy_block_next(found), "Buddy_Allocator has made an allocation which overlaps a block header.")
 		// ensure_poisoned(data)
 		// sanitizer.address_unpoison(data)
 		return data, nil
@@ -2436,6 +2436,7 @@ compat_allocator_init :: proc(rra: ^Compat_Allocator, allocator := context.alloc
 	rra.parent = allocator
 }
 
+@(require_results)
 compat_allocator :: proc(rra: ^Compat_Allocator) -> Allocator {
 	return Allocator{
 		data      = rra,

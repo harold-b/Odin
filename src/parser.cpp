@@ -6330,7 +6330,7 @@ gb_internal bool parse_build_tag(Token token_for_pos, String s) {
 	return any_correct;
 }
 
-gb_internal String vet_tag_get_token(String s, String *out) {
+gb_internal String vet_tag_get_token(String s, String *out, bool allow_colon) {
 	s = string_trim_whitespace(s);
 	isize n = 0;
 	while (n < s.len) {
@@ -6338,7 +6338,7 @@ gb_internal String vet_tag_get_token(String s, String *out) {
 		isize width = utf8_decode(&s[n], s.len-n, &rune);
 		if (n == 0 && rune == '!') {
 
-		} else if (!rune_is_letter(rune) && !rune_is_digit(rune) && rune != '-') {
+		} else if (!rune_is_letter(rune) && !rune_is_digit(rune) && rune != '-' && !(allow_colon && rune == ':')) {
 			isize k = gb_max(gb_max(n, width), 1);
 			*out = substring(s, k, s.len);
 			return substring(s, 0, k);
@@ -6364,7 +6364,7 @@ gb_internal u64 parse_vet_tag(Token token_for_pos, String s) {
 	u64 vet_not_flags = 0;
 
 	while (s.len > 0) {
-		String p = string_trim_whitespace(vet_tag_get_token(s, &s));
+		String p = string_trim_whitespace(vet_tag_get_token(s, &s, /*allow_colon*/false));
 		if (p.len == 0) {
 			break;
 		}
@@ -6432,7 +6432,7 @@ gb_internal u64 parse_feature_tag(Token token_for_pos, String s) {
 	u64 feature_not_flags = 0;
 
 	while (s.len > 0) {
-		String p = string_trim_whitespace(vet_tag_get_token(s, &s));
+		String p = string_trim_whitespace(vet_tag_get_token(s, &s, /*allow_colon*/true));
 		if (p.len == 0) {
 			break;
 		}
@@ -6454,26 +6454,45 @@ gb_internal u64 parse_feature_tag(Token token_for_pos, String s) {
 			} else {
 				feature_flags     |= flag;
 			}
+			if (is_notted) {
+				switch (flag) {
+				case OptInFeatureFlag_IntegerDivisionByZero_Trap:
+				case OptInFeatureFlag_IntegerDivisionByZero_Zero:
+					syntax_error(token_for_pos, "Feature flag does not support notting with '!' - '%.*s'", LIT(p));
+					break;
+				}
+			}
 		} else {
 			ERROR_BLOCK();
 			syntax_error(token_for_pos, "Invalid feature flag name: %.*s", LIT(p));
 			error_line("\tExpected one of the following\n");
 			error_line("\tdynamic-literals\n");
+			error_line("\tinteger-division-by-zero:trap\n");
+			error_line("\tinteger-division-by-zero:zero\n");
+			error_line("\tinteger-division-by-zero:self\n");
 			return OptInFeatureFlag_NONE;
 		}
 	}
 
+	u64 res = OptInFeatureFlag_NONE;
+
 	if (feature_flags == 0 && feature_not_flags == 0) {
-		return OptInFeatureFlag_NONE;
+		res = OptInFeatureFlag_NONE;
+	} else if (feature_flags == 0 && feature_not_flags != 0) {
+		res = OptInFeatureFlag_NONE &~ feature_not_flags;
+	} else if (feature_flags != 0 && feature_not_flags == 0) {
+		res = feature_flags;
+	} else {
+		GB_ASSERT(feature_flags != 0 && feature_not_flags != 0);
+		res = feature_flags &~ feature_not_flags;
 	}
-	if (feature_flags == 0 && feature_not_flags != 0) {
-		return OptInFeatureFlag_NONE &~ feature_not_flags;
+
+	u64 idbz_count = gb_count_set_bits(res & OptInFeatureFlag_IntegerDivisionByZero_ALL);
+	if (idbz_count > 1) {
+		syntax_error(token_for_pos, "Only one integer-division-by-zero feature flag can be enabled");
 	}
-	if (feature_flags != 0 && feature_not_flags == 0) {
-		return feature_flags;
-	}
-	GB_ASSERT(feature_flags != 0 && feature_not_flags != 0);
-	return feature_flags &~ feature_not_flags;
+
+	return res;
 }
 
 gb_internal String dir_from_path(String path) {

@@ -129,6 +129,8 @@ gb_internal bool check_is_castable_to(CheckerContext *c, Operand *operand, Type 
 
 gb_internal bool is_exact_value_zero(ExactValue const &v);
 
+gb_internal IntegerDivisionByZeroKind check_for_integer_division_by_zero(CheckerContext *c, Ast *node);
+
 enum LoadDirectiveResult {
 	LoadDirective_Success  = 0,
 	LoadDirective_Error    = 1,
@@ -2461,7 +2463,8 @@ gb_internal void check_assignment_error_suggestion(CheckerContext *c, Operand *o
 	} else if (is_type_pointer(o->type) &&
 	           are_types_identical(type_deref(o->type), type)) {
 		gbString s = expr_to_string(o->expr);
-		error_line("\tSuggestion: Did you mean `%s^`\n", s);
+		if (s[0] == '&') error_line("\tSuggestion: Did you mean `%s`\n", &s[1]);
+		else error_line("\tSuggestion: Did you mean `%s^`\n", s);
 		gb_string_free(s);
 	}
 }
@@ -4308,7 +4311,25 @@ gb_internal void check_binary_expr(CheckerContext *c, Operand *x, Ast *node, Typ
 			}
 
 			if (fail) {
-				error(y->expr, "Division by zero not allowed");
+				if (is_type_integer(x->type) || (x->mode == Addressing_Constant && x->value.kind == ExactValue_Integer)) {
+					if (check_for_integer_division_by_zero(c, node) != IntegerDivisionByZero_Trap) {
+						// Okay
+						break;
+					}
+				}
+
+				switch (op.kind) {
+				case Token_Mod:
+				case Token_ModMod:
+				case Token_ModEq:
+				case Token_ModModEq:
+					error(y->expr, "Division by zero through '%.*s' not allowed", LIT(token_strings[op.kind]));
+					break;
+				case Token_Quo:
+				case Token_QuoEq:
+					error(y->expr, "Division by zero not allowed");
+					break;
+				}
 				x->mode = Addressing_Invalid;
 				return;
 			}
@@ -4348,7 +4369,59 @@ gb_internal void check_binary_expr(CheckerContext *c, Operand *x, Ast *node, Typ
 			}
 		}
 
-		x->value = exact_binary_operator_value(op.kind, a, b);
+		match_exact_values(&a, &b);
+
+
+		IntegerDivisionByZeroKind zero_behaviour = check_for_integer_division_by_zero(c, node);
+		if (zero_behaviour != IntegerDivisionByZero_Trap &&
+		    b.kind == ExactValue_Integer && big_int_is_zero(&b.value_integer) &&
+		    (op.kind == Token_QuoEq || op.kind == Token_Mod || op.kind == Token_ModMod)) {
+		    	if (op.kind == Token_QuoEq) {
+		    		switch (zero_behaviour) {
+		    		case IntegerDivisionByZero_Zero:
+			    		// x/0 == 0
+					x->value = b;
+					break;
+				case IntegerDivisionByZero_Self:
+			    		// x/0 == x
+					x->value = a;
+					break;
+				case IntegerDivisionByZero_AllBits:
+			    		// x/0 == 0b111...111
+			    		if (is_type_untyped(x->type)) {
+			    			x->value = exact_value_i64(-1);
+			    		} else {
+						x->value = exact_unary_operator_value(Token_Xor, b, cast(i32)(8*type_size_of(x->type)), is_type_unsigned(x->type));
+					}
+					break;
+				}
+			} else {
+		    		/*
+					NOTE(bill): @integer division by zero rules
+
+		    			truncated: r = a - b*trunc(a/b)
+		    			floored:   r = a - b*floor(a/b)
+
+		    			IFF a/0 == 0,        then (a%0 == a) or (a%%0 == a)
+		    			IFF a/0 == a,        then (a%0 == 0) or (a%%0 == 0)
+		    			IFF a/0 == 0b111..., then (a%0 == a) or (a%%0 == a)
+		    		*/
+
+				switch (zero_behaviour) {
+				case IntegerDivisionByZero_Zero:
+				case IntegerDivisionByZero_AllBits:
+			    		// x%0 == x
+					x->value = a;
+					break;
+				case IntegerDivisionByZero_Self:
+			    		// x%0 == 0
+					x->value = b;
+					break;
+				}
+			}
+		} else {
+			x->value = exact_binary_operator_value(op.kind, a, b);
+		}
 
 		if (is_type_typed(x->type)) {
 			if (node != nullptr) {
@@ -6146,7 +6219,8 @@ gb_internal CallArgumentError check_call_arguments_internal(CheckerContext *c, A
 	Entity *entity, Type *proc_type,
 	Array<Operand> positional_operands, Array<Operand> const &named_operands,
 	CallArgumentErrorMode show_error_mode,
-	CallArgumentData *data) {
+	CallArgumentData *data,
+	bool checking_proc_group) {
 	TEMPORARY_ALLOCATOR_GUARD();
 
 	CallArgumentError err = CallArgumentError_None;
@@ -6313,7 +6387,7 @@ gb_internal CallArgumentError check_call_arguments_internal(CheckerContext *c, A
 			bool context_allocator_error = false;
 			if (e->kind == Entity_Variable) {
 				if (e->Variable.param_value.kind != ParameterValue_Invalid) {
-					if (ast_file_vet_explicit_allocators(c->file)) {
+					if (ast_file_vet_explicit_allocators(c->file) && !checking_proc_group) {
 						// NOTE(lucas): check if we are trying to default to context.allocator or context.temp_allocator
 						if (e->Variable.param_value.original_ast_expr->kind == Ast_SelectorExpr) {
 							auto& expr = e->Variable.param_value.original_ast_expr->SelectorExpr.expr;
@@ -6398,6 +6472,14 @@ gb_internal CallArgumentError check_call_arguments_internal(CheckerContext *c, A
 			}
 		}
 
+		if (e && e->kind == Entity_Constant && is_type_proc(e->type)) {
+			if (o->mode != Addressing_Constant) {
+				if (show_error) {
+					error(o->expr, "Expected a constant procedure value for the argument '%.*s'", LIT(e->token.string));
+				}
+				err = CallArgumentError_NoneConstantParameter;
+			}
+		}
 
 		if (!err && is_type_any(param_type)) {
 			add_type_info_type(c, o->type);
@@ -6740,7 +6822,8 @@ gb_internal bool check_call_arguments_single(CheckerContext *c, Ast *call, Opera
 	Entity *e, Type *proc_type,
 	Array<Operand> const &positional_operands, Array<Operand> const &named_operands,
 	CallArgumentErrorMode show_error_mode,
-	CallArgumentData *data) {
+	CallArgumentData *data,
+	bool checking_proc_group) {
 
 	bool return_on_failure = show_error_mode == CallArgumentErrorMode::NoErrors;
 
@@ -6764,7 +6847,7 @@ gb_internal bool check_call_arguments_single(CheckerContext *c, Ast *call, Opera
 	}
 	GB_ASSERT(proc_type->kind == Type_Proc);
 
-	CallArgumentError err = check_call_arguments_internal(c, call, e, proc_type, positional_operands, named_operands, show_error_mode, data);
+	CallArgumentError err = check_call_arguments_internal(c, call, e, proc_type, positional_operands, named_operands, show_error_mode, data, checking_proc_group);
 	if (return_on_failure && err != CallArgumentError_None) {
 		return false;
 	}
@@ -6918,7 +7001,7 @@ gb_internal CallArgumentData check_call_arguments_proc_group(CheckerContext *c, 
 				e, e->type,
 				positional_operands, named_operands,
 				CallArgumentErrorMode::ShowErrors,
-				&data);
+				&data, false);
 		}
 		return data;
 	}
@@ -7043,6 +7126,7 @@ gb_internal CallArgumentData check_call_arguments_proc_group(CheckerContext *c, 
 	gbString expr_name = expr_to_string(operand->expr);
 	defer (gb_string_free(expr_name));
 
+	c->in_proc_group = true;
 	for_array(i, procs) {
 		Entity *p = procs[i];
 		if (p->flags & EntityFlag_Disabled) {
@@ -7062,7 +7146,7 @@ gb_internal CallArgumentData check_call_arguments_proc_group(CheckerContext *c, 
 				p, pt,
 				positional_operands, named_operands,
 				CallArgumentErrorMode::NoErrors,
-				&data);
+				&data, true);
 			if (!is_a_candidate) {
 				continue;
 			}
@@ -7085,6 +7169,7 @@ gb_internal CallArgumentData check_call_arguments_proc_group(CheckerContext *c, 
 			array_add(&valids, item);
 		}
 	}
+	c->in_proc_group = false;
 
 	if (max_matched_features > 0) {
 		for_array(i, valids) {
@@ -7371,7 +7456,7 @@ gb_internal CallArgumentData check_call_arguments_proc_group(CheckerContext *c, 
 			e, e->type,
 			positional_operands, named_operands,
 			CallArgumentErrorMode::ShowErrors,
-			&data);
+			&data, false);
 		return data;
 	}
 
@@ -7484,7 +7569,7 @@ gb_internal CallArgumentData check_call_arguments(CheckerContext *c, Operand *op
 			nullptr, proc_type,
 			positional_operands, named_operands,
 			CallArgumentErrorMode::ShowErrors,
-			&data);
+			&data, false);
 	} else if (pt) {
 		data.result_type = pt->results;
 	}
@@ -7862,7 +7947,7 @@ gb_internal CallArgumentError check_polymorphic_record_type(CheckerContext *c, O
 				s = gb_string_append_fmt(s, "$%.*s", LIT(name));
 
 				if (v->kind == Entity_TypeName) {
-					if (v->type->kind != Type_Generic) {
+					if (v->type != nullptr && v->type->kind != Type_Generic) {
 						s = gb_string_append_fmt(s, "=");
 						s = write_type_to_string(s, v->type, false);
 					}
@@ -8166,8 +8251,12 @@ gb_internal ExprKind check_call_expr(CheckerContext *c, Operand *operand, Ast *c
 	if (pt->kind == Type_Proc && pt->Proc.calling_convention == ProcCC_Odin) {
 		if ((c->scope->flags & ScopeFlag_ContextDefined) == 0) {
 			ERROR_BLOCK();
-			error(call, "'context' has not been defined within this scope, but is required for this procedure call");
-			error_line("\tSuggestion: 'context = runtime.default_context()'");
+			if (c->scope->flags & ScopeFlag_File) {
+				error(call, "Procedures requiring a 'context' cannot be called at the global scope");
+			} else {
+				error(call, "'context' has not been defined within this scope, but is required for this procedure call");
+				error_line("\tSuggestion: 'context = runtime.default_context()'");
+			}
 		}
 	}
 
@@ -9593,6 +9682,24 @@ gb_internal bool check_for_dynamic_literals(CheckerContext *c, Ast *node, AstCom
 	}
 
 	return cl->elems.count > 0;
+}
+
+gb_internal IntegerDivisionByZeroKind check_for_integer_division_by_zero(CheckerContext *c, Ast *node) {
+	// TODO(bill): per file `#+feature` flags
+	u64 flags = check_feature_flags(c, node);
+	if ((flags & OptInFeatureFlag_IntegerDivisionByZero_Trap) != 0) {
+		return IntegerDivisionByZero_Trap;
+	}
+	if ((flags & OptInFeatureFlag_IntegerDivisionByZero_Zero) != 0) {
+		return IntegerDivisionByZero_Zero;
+	}
+	if ((flags & OptInFeatureFlag_IntegerDivisionByZero_Self) != 0) {
+		return IntegerDivisionByZero_Self;
+	}
+	if ((flags & OptInFeatureFlag_IntegerDivisionByZero_AllBits) != 0) {
+		return IntegerDivisionByZero_AllBits;
+	}
+	return build_context.integer_division_by_zero_behaviour;
 }
 
 gb_internal ExprKind check_compound_literal(CheckerContext *c, Operand *o, Ast *node, Type *type_hint) {

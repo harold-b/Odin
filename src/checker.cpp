@@ -3266,12 +3266,18 @@ gb_internal void init_core_map_type(Checker *c) {
 	t_raw_map_ptr       = alloc_type_pointer(t_raw_map);
 }
 
+gb_internal void init_core_objc_c(Checker *c) {
+	t_objc_super     = find_core_type(c, str_lit("objc_super"));
+	t_objc_super_ptr = alloc_type_pointer(t_objc_super);
+}
+
 gb_internal void init_preload(Checker *c) {
 	init_core_type_info(c);
 	init_mem_allocator(c);
 	init_core_context(c);
 	init_core_source_code_location(c);
 	init_core_map_type(c);
+	init_core_objc_c(c);
 }
 
 gb_internal ExactValue check_decl_attribute_value(CheckerContext *c, Ast *value) {

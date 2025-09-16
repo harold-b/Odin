@@ -8020,8 +8020,11 @@ void add_objc_proc_type(CheckerContext *c, Ast *call, Type *return_type, Slice<T
 gb_internal void check_objc_call_expr(CheckerContext *c, Ast *call, Entity *proc_entity, Type *proc_type) {
 	auto &proc = proc_type->Proc;
 	Slice<Entity *> params = proc.params->Tuple.variables;
+
 	Type *self_type = t_objc_id;
 	isize params_start = 1;
+
+	ast_node(ce, CallExpr, call);
 
 	if (params.count == 0 || !is_type_objc_ptr_to_object(params[0]->type)) {
 		if (!proc_entity->Procedure.is_objc_class_method) {
@@ -8032,6 +8035,9 @@ gb_internal void check_objc_call_expr(CheckerContext *c, Ast *call, Entity *proc
 
 		self_type    = t_objc_Class;
 		params_start = 0;
+	} else if (ce->args.count > 0 && ce->args[0]->tav.is_objc_super) {
+		GB_ASSERT(is_type_objc_ptr_to_object(params[0]->type));
+		self_type = t_objc_super_ptr;
 	}
 
 	auto param_types = slice_make<Type *>(permanent_allocator(), proc.param_count + 2 - params_start);

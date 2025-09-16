@@ -248,6 +248,13 @@ void add_objc_proc_type(CheckerContext *c, Ast *call, Type *return_type, Slice<T
 	try_to_add_package_dependency(c, "runtime", "objc_msgSend_fpret");
 	try_to_add_package_dependency(c, "runtime", "objc_msgSend_fp2ret");
 	try_to_add_package_dependency(c, "runtime", "objc_msgSend_stret");
+
+	Slice<Ast *> args = call->CallExpr.args;
+	if (args.count > 0 && args[0]->tav.is_objc_super) {
+		try_to_add_package_dependency(c, "runtime", "objc_msgSendSuper");
+		try_to_add_package_dependency(c, "runtime", "objc_msgSendSuper_stret");
+		try_to_add_package_dependency(c, "runtime", "class_getSuperclass");
+	}
 }
 
 gb_internal bool is_constant_string(CheckerContext *c, String const &builtin_name, Ast *expr, String *name_) {

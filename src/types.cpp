@@ -749,6 +749,8 @@ gb_global Type *t_objc_object   = nullptr;
 gb_global Type *t_objc_selector = nullptr;
 gb_global Type *t_objc_class    = nullptr;
 gb_global Type *t_objc_ivar     = nullptr;
+gb_global Type *t_objc_super    = nullptr;
+gb_global Type *t_objc_super_ptr = nullptr;
 
 gb_global Type *t_objc_id    = nullptr;
 gb_global Type *t_objc_SEL   = nullptr;

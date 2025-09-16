@@ -1050,6 +1050,7 @@ gb_internal void check_objc_methods(CheckerContext *ctx, Entity *e, AttributeCon
 
 		String objc_selector = ac.objc_selector != "" ? ac.objc_selector : ac.objc_name;
 
+		// TODO(harold): We can ONLY do this if it's a procedure group!!
 		bool has_body = e->decl_info->proc_lit->ProcLit.body != nullptr;
 		e->Procedure.is_objc_impl_or_import = implement || !has_body;
 		e->Procedure.is_objc_class_method   = ac.objc_is_class_method;
@@ -1111,10 +1112,7 @@ gb_internal void check_objc_methods(CheckerContext *ctx, Entity *e, AttributeCon
 			}
 
 			// TODO(harold): Check calling conv?? Must be C
-			// TODO(harold): Add msgSend data and include it for lb_handle_objc_send generation
-			// That is, add an entry for retrieval later: ObjcMsgData data
-			// add_objc_proc_type(ctx, call, return_type, param_types);
-			// add_objc_proc_type(CheckerContext *c, Ast *call, Type *return_type, Slice<Type *> param_types)
+			// TODO(harold): Cannot have attributes pertaining to implementations
 		}
 		else if(ac.objc_selector != "") {
 			error(e->token, "@(objc_selector) may only be applied to procedures that are Objective-C implementations or are imported.");

@@ -8021,7 +8021,7 @@ gb_internal void check_objc_call_expr(CheckerContext *c, Ast *call, Entity *proc
 	auto &proc = proc_type->Proc;
 	Slice<Entity *> params = proc.params->Tuple.variables;
 
-	Type *self_type = t_objc_id;
+	Type *self_type = nullptr;
 	isize params_start = 1;
 
 	ast_node(ce, CallExpr, call);
@@ -8035,9 +8035,14 @@ gb_internal void check_objc_call_expr(CheckerContext *c, Ast *call, Entity *proc
 
 		self_type    = t_objc_Class;
 		params_start = 0;
-	} else if (ce->args.count > 0 && ce->args[0]->tav.is_objc_super) {
+	} else if (ce->args.count > 0) {
 		GB_ASSERT(is_type_objc_ptr_to_object(params[0]->type));
-		self_type = t_objc_super_ptr;
+
+		if (ce->args[0]->tav.is_objc_super) {
+			self_type = t_objc_super_ptr;
+		} else {
+			self_type = params[0]->type;
+		}
 	}
 
 	auto param_types = slice_make<Type *>(permanent_allocator(), proc.param_count + 2 - params_start);

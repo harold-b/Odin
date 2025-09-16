@@ -4108,7 +4108,7 @@ gb_internal void lb_add_values_to_array(lbProcedure *p, Array<lbValue> *args, lb
 
 gb_internal lbValue lb_emit_objc_call(lbProcedure *p, Ast *expr, Array<lbValue> const &args) {
 	// TODO(harold): Remove this wrapper func and go directly to lb_handle_objc_auto_send
-	return lb_handle_objc_auto_send(p, expr);
+	return lb_handle_objc_auto_send(p, expr, slice(args, 0, args.count));
 }
 
 gb_internal lbValue lb_build_call_expr_internal(lbProcedure *p, Ast *expr) {

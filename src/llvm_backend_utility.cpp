@@ -2776,7 +2776,7 @@ gb_internal lbValue lb_handle_objc_send(lbProcedure *p, Ast *expr) {
 	return lb_emit_call(p, the_proc, args);
 }
 
-gb_internal lbValue lb_handle_objc_auto_send(lbProcedure *p, Ast *expr) {
+gb_internal lbValue lb_handle_objc_auto_send(lbProcedure *p, Ast *expr, Slice<lbValue> const arg_values) {
 	ast_node(ce, CallExpr, expr);
 
 	lbModule *m = p->module;
@@ -2796,13 +2796,11 @@ gb_internal lbValue lb_handle_objc_auto_send(lbProcedure *p, Ast *expr) {
 
 	bool is_objc_super = ce->args.count > 0 && ce->args[0]->tav.is_objc_super;
 
-	auto args = array_make<lbValue>(permanent_allocator(), 0, data.proc_type->Proc.param_count);
-
 	isize arg_offset = 1;
 	lbValue id = {};
 	if (!objc_method_ent->Procedure.is_objc_class_method) {
 		GB_ASSERT(ce->args.count > 0);
-		id = lb_build_expr(p, ce->args[0]);
+		id = arg_values[0];
 
 		if (is_objc_super) {
 
@@ -2837,12 +2835,13 @@ gb_internal lbValue lb_handle_objc_auto_send(lbProcedure *p, Ast *expr) {
 
 	lbValue sel = lb_addr_load(p, lb_handle_objc_find_or_register_selector(p, objc_method_ent->Procedure.objc_selector_name));
 
+	auto args = array_make<lbValue>(permanent_allocator(), 0, arg_values.count + 2 - arg_offset);
+
 	array_add(&args, id);
 	array_add(&args, sel);
 
 	for (isize i = arg_offset; i < ce->args.count; i++) {
-		lbValue arg = lb_build_expr(p, ce->args[i]);
-		array_add(&args, arg);
+		array_add(&args, arg_values[i]);
 	}
 
 	lbValue the_proc = {};

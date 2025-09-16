@@ -1055,13 +1055,14 @@ gb_internal void check_objc_methods(CheckerContext *ctx, Entity *e, AttributeCon
 		e->Procedure.is_objc_class_method   = ac.objc_is_class_method;
 		e->Procedure.objc_selector_name     = objc_selector;
 		e->Procedure.objc_class             = tn;
+
 		if (implement) {
 			GB_ASSERT(e->kind == Entity_Procedure);
 
 			auto &proc = e->type->Proc;
 			Type *first_param = proc.param_count > 0 ? proc.params->Tuple.variables[0]->type : t_untyped_nil;
 
-			if( has_body ) {
+			if( !has_body ) {
 				error(e->token, "Procedures with @(objc_is_implement) must have a body");
 			} else if (!tn->TypeName.objc_is_implementation) {
 				error(e->token, "@(objc_is_implement) attribute may only be applied to procedures whose class also have @(objc_is_implement) applied");

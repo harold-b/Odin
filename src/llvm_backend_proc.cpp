@@ -4107,13 +4107,7 @@ gb_internal void lb_add_values_to_array(lbProcedure *p, Array<lbValue> *args, lb
 }
 
 gb_internal lbValue lb_emit_objc_call(lbProcedure *p, Ast *expr, Array<lbValue> const &args) {
-	// GB_ASSERT(args.count > 0);
-	// GB_ASSERT(is_type_objc_ptr_to_object(args[0].type));
-
-	// lbModule *m = p->module;
-	// TypeAndValue tv = type_and_value_of_expr(expr);
-	// ast_node(ce, CallExpr, expr);
-
+	// TODO(harold): Remove this wrapper func and go directly to lb_handle_objc_auto_send
 	return lb_handle_objc_auto_send(p, expr);
 }
 
@@ -4147,7 +4141,7 @@ gb_internal lbValue lb_build_call_expr_internal(lbProcedure *p, Ast *expr) {
 		return lb_build_builtin_proc(p, expr, tv, id);
 	}
 
-	bool is_objc_call = proc_entity->Procedure.is_objc_impl_or_import && proc_entity->Procedure.is_foreign;
+	bool is_objc_call = proc_entity->Procedure.is_objc_impl_or_import;
 
 	// NOTE(bill): Regular call
 	lbValue value = {};

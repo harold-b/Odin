@@ -2654,6 +2654,15 @@ gb_internal lbValue lb_handle_objc_block(lbProcedure *p, Ast *expr) {
 	return result;
 }
 
+gb_internal lbValue lb_handle_objc_super(lbProcedure *p, Ast *expr) {
+	ast_node(ce, CallExpr, expr);
+	GB_ASSERT(ce->args.count == 1);
+
+	// NOTE(harold): This doesn't actually do anything by itself,
+	// it has an effect when used on the left side of a selector call expression.
+	return lb_build_expr(p, ce->args[0]);
+}
+
 gb_internal lbValue lb_handle_objc_find_selector(lbProcedure *p, Ast *expr) {
 	ast_node(ce, CallExpr, expr);
 
@@ -2766,6 +2775,66 @@ gb_internal lbValue lb_handle_objc_send(lbProcedure *p, Ast *expr) {
 
 	return lb_emit_call(p, the_proc, args);
 }
+
+gb_internal lbValue lb_handle_objc_auto_send(lbProcedure *p, Ast *expr) {
+	ast_node(ce, CallExpr, expr);
+
+	lbModule *m = p->module;
+	CheckerInfo *info = m->info;
+	ObjcMsgData data = map_must_get(&info->objc_msgSend_types, expr);
+
+	Type *proc_type = data.proc_type;
+	GB_ASSERT(proc_type != nullptr);
+
+	Entity *objc_method_ent = entity_of_node(ce->proc);
+	GB_ASSERT(objc_method_ent != nullptr);
+	GB_ASSERT(objc_method_ent->kind == Entity_Procedure);
+	GB_ASSERT(objc_method_ent->Procedure.objc_selector_name.len > 0);
+
+	auto &proc = proc_type->Proc;
+	GB_ASSERT(proc.param_count >= 2);
+
+	auto args = array_make<lbValue>(permanent_allocator(), 0, data.proc_type->Proc.param_count);
+
+	isize arg_offset = 1;
+	lbValue id = {};
+	if (!objc_method_ent->Procedure.is_objc_class_method) {
+		GB_ASSERT(ce->args.count > 0);
+		id = lb_build_expr(p, ce->args[0]);
+	} else {
+		Entity *objc_class = objc_method_ent->Procedure.objc_class;
+		Type *class_impl_type = objc_class->TypeName.objc_is_implementation ? objc_class->type : nullptr;
+
+		id = lb_addr_load(p, lb_handle_objc_find_or_register_class(p, objc_class->TypeName.objc_class_name, class_impl_type));
+		arg_offset = 0;
+	}
+
+	lbValue sel = lb_addr_load(p, lb_handle_objc_find_or_register_selector(p, objc_method_ent->Procedure.objc_selector_name));
+
+	array_add(&args, id);
+	array_add(&args, sel);
+
+	for (isize i = arg_offset; i < ce->args.count; i++) {
+		lbValue arg = lb_build_expr(p, ce->args[i]);
+		array_add(&args, arg);
+	}
+
+	lbValue the_proc = {};
+	switch (data.kind) {
+		default:
+			GB_PANIC("unhandled ObjcMsgKind %u", data.kind);
+		break;
+		case ObjcMsg_normal: the_proc = lb_lookup_runtime_procedure(m, str_lit("objc_msgSend"));        break;
+		case ObjcMsg_fpret:  the_proc = lb_lookup_runtime_procedure(m, str_lit("objc_msgSend_fpret"));  break;
+		case ObjcMsg_fp2ret: the_proc = lb_lookup_runtime_procedure(m, str_lit("objc_msgSend_fp2ret")); break;
+		case ObjcMsg_stret:  the_proc = lb_lookup_runtime_procedure(m, str_lit("objc_msgSend_stret"));  break;
+	}
+
+	the_proc = lb_emit_conv(p, the_proc, data.proc_type);
+
+	return lb_emit_call(p, the_proc, args);
+}
+
 
 gb_internal LLVMAtomicOrdering llvm_atomic_ordering_from_odin(ExactValue const &value) {
 	GB_ASSERT(value.kind == ExactValue_Integer);

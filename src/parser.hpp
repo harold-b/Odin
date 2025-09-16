@@ -31,6 +31,7 @@ struct TypeAndValue {
 	Type *         type;
 	AddressingMode mode;
 	bool           is_lhs; // Debug info
+	bool           is_objc_super;
 	ExactValue     value;
 };
 

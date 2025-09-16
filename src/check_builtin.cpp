@@ -210,7 +210,7 @@ gb_internal ObjcMsgKind get_objc_proc_kind(Type *return_type) {
 	return ObjcMsg_normal;
 }
 
-gb_internal void add_objc_proc_type(CheckerContext *c, Ast *call, Type *return_type, Slice<Type *> param_types) {
+void add_objc_proc_type(CheckerContext *c, Ast *call, Type *return_type, Slice<Type *> param_types) {
 	ObjcMsgKind kind = get_objc_proc_kind(return_type);
 
 	Scope *scope = create_scope(c->info, nullptr);
@@ -466,8 +466,8 @@ gb_internal bool check_builtin_objc_procedure(CheckerContext *c, Operand *operan
 
 		isize capture_arg_count = ce->args.count - 1;
 
-		// NOTE(harold): The first parameter is already checked at check_builtin_procedure().
-		// Checking again would invalidate the Entity -> Value map for direct parameters if it's the handler proc.
+		// NOTE(harold): The first argument is already checked at check_builtin_procedure().
+		// Checking again would invalidate the Entity -> Value map for direct arguments if it's the handler proc.
 		param_operands[0] = *operand;
 
 		for (isize i = 0; i < ce->args.count-1; i++) {
@@ -679,6 +679,47 @@ gb_internal bool check_builtin_objc_procedure(CheckerContext *c, Operand *operan
 		operand->type = alloc_type_pointer(operand->type);
 		operand->mode = Addressing_Value;
 		return true;
+	} break;
+
+	case BuiltinProc_objc_super:
+	{
+		// Must be a pointer to an Objective-C object.
+		Type *objc_class = operand->type;
+		if (!is_type_objc_ptr_to_object(objc_class)) {
+			gbString e = expr_to_string(operand->expr);
+			gbString t = type_to_string(objc_class);
+			error(operand->expr, "'%.*s' expected a pointer to an Objective-C object, but got '%s' of type %s", LIT(builtin_name), e, t);
+			gb_string_free(t);
+			gb_string_free(e);
+			return false;
+		}
+
+		if (operand->mode != Addressing_Value && operand->mode != Addressing_Variable) {
+			gbString e = expr_to_string(operand->expr);
+			gbString t = type_to_string(operand->type);
+			error(operand->expr, "'%.*s' expression '%s', of type %s, must be a value or variable.", LIT(builtin_name), e, t);
+			gb_string_free(t);
+			gb_string_free(e);
+			return false;
+		}
+
+		call->tav.is_objc_super = true;
+		// operand->expr->tav.is_objc_super = true;
+		// operand->expr->state_flags |= StateFlag_objc_super;
+		// operand->expr->is)
+		// Type *obj_type = type_deref(operand->type);
+		// GB_ASSERT(obj_type->kind == Type_Named);
+
+		// TODO (harold): Remove this! This can't happen, we require in the type itself to emit the right objcSuper call.
+		// If it has a superclass associated with it, set the return value to a
+		// pointer to the superclass. Otherwise, leave it set to itself.
+		// Type *superclass = obj_type->Named.type_name->TypeName.objc_superclass;
+		// if (superclass != nullptr) {
+		// 	GB_ASSERT(is_type_objc_object(superclass));
+		// 	operand->type = alloc_type_pointer(superclass);
+		// }
+		return true;
+
 	} break;
 	}
 }
@@ -2515,6 +2556,7 @@ gb_internal bool check_builtin_procedure(CheckerContext *c, Operand *operand, As
 	case BuiltinProc_objc_register_class:
 	case BuiltinProc_objc_ivar_get:
 	case BuiltinProc_objc_block:
+	case BuiltinProc_objc_super:
 		return check_builtin_objc_procedure(c, operand, call, id, type_hint);
 
 	case BuiltinProc___entry_point:

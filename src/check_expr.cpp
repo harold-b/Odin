@@ -8015,6 +8015,35 @@ gb_internal bool check_call_parameter_mixture(Slice<Ast *> const &args, char con
 	return Expr_Stmt; \
 }
 
+void add_objc_proc_type(CheckerContext *c, Ast *call, Type *return_type, Slice<Type *> param_types);
+
+gb_internal void check_objc_call_expr(CheckerContext *c, Ast *call, Entity *proc_entity, Type *proc_type) {
+	auto &proc = proc_type->Proc;
+	Slice<Entity *> params = proc.params->Tuple.variables;
+	Type *self_type = t_objc_id;
+	isize params_start = 1;
+
+	if (params.count == 0 || !is_type_objc_ptr_to_object(params[0]->type)) {
+		if (!proc_entity->Procedure.is_objc_class_method) {
+			// Not a class method, invalid call
+			error(call, "Invalid Objective-C call: The Objective-C method is not a class method but this first parameter is not an Objective-C object pointer.");
+			return;
+		}
+
+		self_type    = t_objc_Class;
+		params_start = 0;
+	}
+
+	auto param_types = slice_make<Type *>(permanent_allocator(), proc.param_count + 2 - params_start);
+	param_types[0] = self_type;
+	param_types[1] = t_objc_SEL;
+
+	for (isize i = params_start; i < params.count; i++) {
+		param_types[i+2] = params[i]->type;
+	}
+
+	add_objc_proc_type(c, call, proc.result_count == 0 ? nullptr : proc.results->Tuple.variables[0]->type, param_types);
+}
 
 gb_internal ExprKind check_call_expr(CheckerContext *c, Operand *operand, Ast *call, Ast *proc, Slice<Ast *> const &args, ProcInlining inlining, Type *type_hint) {
 	if (proc != nullptr &&
@@ -8185,6 +8214,7 @@ gb_internal ExprKind check_call_expr(CheckerContext *c, Operand *operand, Ast *c
 	CHECK_CALL_PARAMETER_MIXTURE_OR_RETURN(operand->mode == Addressing_ProcGroup ? "procedure group call": "procedure call", true);
 
 	Entity *initial_entity = entity_of_node(operand->expr);
+	bool is_objc_call = false;
 
 	if (initial_entity != nullptr && initial_entity->kind == Entity_Procedure) {
 		if (initial_entity->Procedure.deferred_procedure.entity != nullptr) {
@@ -8194,6 +8224,8 @@ gb_internal ExprKind check_call_expr(CheckerContext *c, Operand *operand, Ast *c
 			}
 		}
 		add_entity_use(c, operand->expr, initial_entity);
+
+		is_objc_call = initial_entity->Procedure.is_objc_impl_or_import;
 
 		if (initial_entity->Procedure.entry_point_only) {
 			if (c->curr_proc_decl && c->curr_proc_decl->entity == c->info->entry_point) {
@@ -8367,6 +8399,10 @@ gb_internal ExprKind check_call_expr(CheckerContext *c, Operand *operand, Ast *c
 				operand->expr->CallExpr.optional_ok_one = true;
 			}
 		}
+	}
+
+	if (is_objc_call) {
+		check_objc_call_expr(c, call, initial_entity, pt);
 	}
 
 	return Expr_Expr;

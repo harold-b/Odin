@@ -4652,6 +4652,14 @@ gb_internal bool is_type_objc_object(Type *t) {
 	return internal_check_is_assignable_to(t, t_objc_object);
 }
 
+gb_internal bool is_type_objc_ptr_to_object(Type *t) {
+	// NOTE (harold): is_type_objc_object() returns true if it's a pointer to an object or the object itself.
+	//                This returns true ONLY if Type is a shallow pointer to an Objective-C object.
+
+	Type *elem = type_deref(t);
+	return elem != t && elem->kind == Type_Named && is_type_objc_object(elem);
+}
+
 gb_internal Type *get_struct_field_type(Type *t, isize index) {
 	t = base_type(type_deref(t));
 	GB_ASSERT(t->kind == Type_Struct);

@@ -249,6 +249,8 @@ struct Entity {
 			String  link_name;
 			String  link_prefix;
 			String  link_suffix;
+			String  objc_selector_name;
+			Entity *objc_class;
 			DeferredProcedure deferred_procedure;
 
 			struct GenProcsData *gen_procs;
@@ -264,6 +266,8 @@ struct Entity {
 			bool    is_anonymous               : 1;
 			bool    no_sanitize_address        : 1;
 			bool    no_sanitize_memory         : 1;
+			bool    is_objc_impl_or_import     : 1;
+			bool    is_objc_class_method       : 1;
 		} Procedure;
 		struct {
 			Array<Entity *> entities;

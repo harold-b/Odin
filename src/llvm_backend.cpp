@@ -1412,8 +1412,21 @@ String lb_get_objc_type_encoding(Type *t, isize pointer_depth = 0) {
 		return str_lit("?");
 	case Type_Proc:
 		return str_lit("?");
-	case Type_BitSet:
-		return lb_get_objc_type_encoding(t->BitSet.underlying, pointer_depth);
+	case Type_BitSet: {
+		Type *bitset_integer_type = t->BitSet.underlying;
+		if (!bitset_integer_type) {
+			switch (t->cached_size) {
+				case 1:  bitset_integer_type = t_u8;   break;
+				case 2:  bitset_integer_type = t_u16;  break;
+				case 4:  bitset_integer_type = t_u32;  break;
+				case 8:  bitset_integer_type = t_u64;  break;
+				case 16: bitset_integer_type = t_u128; break;
+			}
+		}
+		GB_ASSERT_MSG(bitset_integer_type, "Could not determine bit_set integer size for objc_type_encoding");
+
+		return lb_get_objc_type_encoding(bitset_integer_type, pointer_depth);
+	}
 
 	case Type_SimdVector: {
 		String type_str = lb_get_objc_type_encoding(t->SimdVector.elem, pointer_depth);
@@ -1738,27 +1751,68 @@ gb_internal void lb_finalize_objc_names(lbGenerator *gen, lbProcedure *p) {
 
 				auto method_call_args = array_make<lbValue>(temporary_allocator(), method_param_count + method_param_offset);
 
-				if (!md.ac.objc_is_class_method) {
-					method_call_args[0] = lbValue {
-						wrapper_proc->raw_input_parameters[0],
-						class_ptr_type,
-					};
-				}
+				// if (!md.ac.objc_is_class_method) {
+				// 	method_call_args[0] = lbValue {
+				// 		wrapper_proc->raw_input_parameters[0],
+				// 		class_ptr_type,
+				// 	};
+				// }
 
+				lbFunctionType *ft = lb_get_function_type(m, method_type);
+
+				isize method_forward_arg_count = method_param_count + method_param_offset;
+				auto raw_method_args = array_make<LLVMValueRef>(temporary_allocator(), method_forward_arg_count, method_forward_arg_count);
+				if (!md.ac.objc_is_class_method) {
+					raw_method_args[0] = wrapper_proc->raw_input_parameters[0];
+				}
 				for (isize i = 0; i < method_param_count; i++) {
-					method_call_args[i+method_param_offset] = lbValue {
-						wrapper_proc->raw_input_parameters[i+2],
-						method_type->Proc.params->Tuple.variables[i+method_param_offset]->type,
-					};
+					raw_method_args[i+method_param_offset] = wrapper_proc->raw_input_parameters[i+2];
+					//
+					// lbValue arg = {};
+					// arg.value = wrapper_proc->raw_input_parameters[i+2];
+					// arg.type  = method_type->Proc.params->Tuple.variables[i+method_param_offset]->type;
+					//
+					// if (ft->args[i+method_param_offset].kind == lbArg_Indirect) {
+					// 	lbAddr tmp = lb_add_local_generated_temp(wrapper_proc, arg.type, arg.type->cached_align);
+					//
+					// 	// lbValue arg_ptr = arg;
+					// 	// arg_ptr.type = alloc_type_pointer(arg.type);
+					//
+					// 	lb_emit_store(wrapper_proc, tmp.addr, arg);
+					// 	arg.value = lb_addr_load(wrapper_proc, tmp).value;
+					// }
+					//
+					// // LLVMTypeKind kind = LLVMGetTypeKind(LLVMTypeOf(arg.value));
+					// // if (kind == LLVMPointerTypeKind && !is_type_pointer(arg.type)) {
+					// // 	arg.type = alloc_type_pointer(arg.type);
+					// // }
+					//
+					// // lbValue arg = lb_find_value_from_entity(wrapper_proc->module, method_param_vars[i]);
+					// // lb_find_procedure_value_from_entity(wrapper_proc->module, method_param_vars[i]);
+					// // arg = lb_emit_load(wrapper_proc, arg);
+					//
+					// // lb_entity
+					// // lb_address_from_load(raw_value)
+					// method_call_args[i+method_param_offset] = arg; //lbValue {
+					// // 	raw_value,
+					// // 	method_type->Proc.params->Tuple.variables[i+method_param_offset]->type,
+					// // };
 				}
 				lbValue method_proc_value = lb_find_procedure_value_from_entity(m, md.proc_entity);
 
+				LLVMTypeRef fnp = lb_type_internal_for_procedures_raw(m, method_type);
+				LLVMValueRef ret_val_raw = LLVMBuildCall2(wrapper_proc->builder, fnp, method_proc_value.value, raw_method_args.data, (unsigned)raw_method_args.count, "");
 				// Call real procedure for method from here, passing the parameters expected, if any.
-				lbValue return_value = lb_emit_call(wrapper_proc, method_proc_value, method_call_args);
+				// lbValue return_value = lb_emit_call(wrapper_proc, method_proc_value, method_call_args);
 
 				if (wrapper_results_tuple != nullptr) {
 					auto &result_var = method_type->Proc.results->Tuple.variables[0];
-					return_value = lb_emit_conv(wrapper_proc, return_value, result_var->type);
+					// return_value = lb_emit_conv(wrapper_proc, return_value, result_var->type);
+					// lb_build_return_stmt_internal(wrapper_proc, return_value, result_var->token.pos);
+
+					lbValue return_value = {};
+					return_value.value = ret_val_raw;
+					return_value.type  = result_var->type;
 					lb_build_return_stmt_internal(wrapper_proc, return_value, result_var->token.pos);
 				}
 			}
@@ -1779,8 +1833,8 @@ gb_internal void lb_finalize_objc_names(lbGenerator *gen, lbProcedure *p) {
 				method_encoding = concatenate_strings(temporary_allocator(), method_encoding, str_lit("#:"));
 			}
 
-			for (isize i = method_param_offset; i < method_param_count; i++) {
-				Type *param_type = method_type->Proc.params->Tuple.variables[i]->type;
+			for (isize i = 0; i < method_param_count; i++) {
+				Type *param_type = method_type->Proc.params->Tuple.variables[i + method_param_offset]->type;
 				String param_encoding = lb_get_objc_type_encoding(param_type);
 
 				method_encoding = concatenate_strings(temporary_allocator(), method_encoding, param_encoding);

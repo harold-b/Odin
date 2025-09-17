@@ -8050,7 +8050,7 @@ gb_internal void check_objc_call_expr(CheckerContext *c, Ast *call, Entity *proc
 	param_types[1] = t_objc_SEL;
 
 	for (isize i = params_start; i < params.count; i++) {
-		param_types[i+2] = params[i]->type;
+		param_types[i+2-params_start] = params[i]->type;
 	}
 
 	add_objc_proc_type(c, call, proc.result_count == 0 ? nullptr : proc.results->Tuple.variables[0]->type, param_types);

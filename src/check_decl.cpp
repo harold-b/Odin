@@ -1050,73 +1050,78 @@ gb_internal void check_objc_methods(CheckerContext *ctx, Entity *e, AttributeCon
 
 		String objc_selector = ac.objc_selector != "" ? ac.objc_selector : ac.objc_name;
 
-		// TODO(harold): We can ONLY do this if it's a procedure group!!
-		bool has_body = e->decl_info->proc_lit->ProcLit.body != nullptr;
-		e->Procedure.is_objc_impl_or_import = implement || !has_body;
-		e->Procedure.is_objc_class_method   = ac.objc_is_class_method;
-		e->Procedure.objc_selector_name     = objc_selector;
-		e->Procedure.objc_class             = tn;
+		if (e->kind == Entity_Procedure) {
+			bool has_body = e->decl_info->proc_lit->ProcLit.body != nullptr;
+			e->Procedure.is_objc_impl_or_import = implement || !has_body;
+			e->Procedure.is_objc_class_method   = ac.objc_is_class_method;
+			e->Procedure.objc_selector_name     = objc_selector;
+			e->Procedure.objc_class             = tn;
 
-		if (implement) {
-			GB_ASSERT(e->kind == Entity_Procedure);
+			if (implement) {
+				GB_ASSERT(e->kind == Entity_Procedure);
 
-			auto &proc = e->type->Proc;
-			Type *first_param = proc.param_count > 0 ? proc.params->Tuple.variables[0]->type : t_untyped_nil;
+				auto &proc = e->type->Proc;
+				Type *first_param = proc.param_count > 0 ? proc.params->Tuple.variables[0]->type : t_untyped_nil;
 
-			if( !has_body ) {
-				error(e->token, "Procedures with @(objc_is_implement) must have a body");
-			} else if (!tn->TypeName.objc_is_implementation) {
-				error(e->token, "@(objc_is_implement) attribute may only be applied to procedures whose class also have @(objc_is_implement) applied");
-			} else if (!ac.objc_is_class_method && !(first_param->kind == Type_Pointer && internal_check_is_assignable_to(t, first_param->Pointer.elem))) {
-				error(e->token, "Objective-C instance methods implementations require the first parameter to be a pointer to the class type set by @(objc_type)");
-			} else if (proc.calling_convention == ProcCC_Odin && !tn->TypeName.objc_context_provider) {
-				error(e->token, "Objective-C methods with Odin calling convention can only be used with classes that have @(objc_context_provider) set");
-			} else if (ac.objc_is_class_method && proc.calling_convention != ProcCC_CDecl) {
-				error(e->token, "Objective-C class methods (objc_is_class_method=true) that have @objc_is_implementation can only use \"c\" calling convention");
-			} else if (proc.result_count > 1) {
-				error(e->token, "Objective-C method implementations may return at most 1 value");
-			} else {
-				// Always export unconditionally
-				// NOTE(harold): This means check_objc_methods() MUST be called before
-				//				 e->Procedure.is_export is set in check_proc_decl()!
-				if (ac.is_export) {
-					error(e->token, "Explicit export not allowed when @(objc_implement) is set. It set exported implicitly");
-				}
-				if (ac.link_name != "") {
-					error(e->token, "Explicit linkage not allowed when @(objc_implement) is set. It set to \"strong\" implicitly");
-				}
-
-				ac.is_export = true;
-				ac.linkage   = STR_LIT("strong");
-
-				auto method = ObjcMethodData{ ac, e };
-				method.ac.objc_selector = objc_selector;
-
-				CheckerInfo *info = ctx->info;
-				mutex_lock(&info->objc_method_mutex);
-				defer (mutex_unlock(&info->objc_method_mutex));
-
-				Array<ObjcMethodData>* method_list = map_get(&info->objc_method_implementations, t);
-				if (method_list) {
-					array_add(method_list, method);
+				if( !has_body ) {
+					error(e->token, "Procedures with @(objc_is_implement) must have a body");
+				} else if (!tn->TypeName.objc_is_implementation) {
+					error(e->token, "@(objc_is_implement) attribute may only be applied to procedures whose class also have @(objc_is_implement) applied");
+				} else if (!ac.objc_is_class_method && !(first_param->kind == Type_Pointer && internal_check_is_assignable_to(t, first_param->Pointer.elem))) {
+					error(e->token, "Objective-C instance methods implementations require the first parameter to be a pointer to the class type set by @(objc_type)");
+				} else if (proc.calling_convention == ProcCC_Odin && !tn->TypeName.objc_context_provider) {
+					error(e->token, "Objective-C methods with Odin calling convention can only be used with classes that have @(objc_context_provider) set");
+				} else if (ac.objc_is_class_method && proc.calling_convention != ProcCC_CDecl) {
+					error(e->token, "Objective-C class methods (objc_is_class_method=true) that have @objc_is_implementation can only use \"c\" calling convention");
+				} else if (proc.result_count > 1) {
+					error(e->token, "Objective-C method implementations may return at most 1 value");
 				} else {
-					auto list = array_make<ObjcMethodData>(permanent_allocator(), 1, 8);
-					list[0] = method;
+					// Always export unconditionally
+					// NOTE(harold): This means check_objc_methods() MUST be called before
+					//				 e->Procedure.is_export is set in check_proc_decl()!
+					if (ac.is_export) {
+						error(e->token, "Explicit export not allowed when @(objc_implement) is set. It set exported implicitly");
+					}
+					if (ac.link_name != "") {
+						error(e->token, "Explicit linkage not allowed when @(objc_implement) is set. It set to \"strong\" implicitly");
+					}
 
-					map_set(&info->objc_method_implementations, t, list);
+					ac.is_export = true;
+					ac.linkage   = STR_LIT("strong");
+
+					auto method = ObjcMethodData{ ac, e };
+					method.ac.objc_selector = objc_selector;
+
+					CheckerInfo *info = ctx->info;
+					mutex_lock(&info->objc_method_mutex);
+					defer (mutex_unlock(&info->objc_method_mutex));
+
+					Array<ObjcMethodData>* method_list = map_get(&info->objc_method_implementations, t);
+					if (method_list) {
+						array_add(method_list, method);
+					} else {
+						auto list = array_make<ObjcMethodData>(permanent_allocator(), 1, 8);
+						list[0] = method;
+
+						map_set(&info->objc_method_implementations, t, list);
+					}
 				}
-			}
-		} else if (!has_body) {
-			if (ac.objc_selector == "The @(objc_selector) attribute is required for imported Objective-C methods.") {
-				return;
-			}
+			} else if (!has_body) {
+				if (ac.objc_selector == "The @(objc_selector) attribute is required for imported Objective-C methods.") {
+					return;
+				}
 
-			// TODO(harold): Check calling conv?? Must be C
-			// TODO(harold): Cannot have attributes pertaining to implementations
+				// TODO(harold): Check calling conv?? Must be C
+				// TODO(harold): Cannot have attributes pertaining to implementations
+			}
+			else if(ac.objc_selector != "") {
+				error(e->token, "@(objc_selector) may only be applied to procedures that are Objective-C implementations or are imported.");
+			}
+		} else {
+			GB_ASSERT(e->kind == Entity_ProcGroup);
+			// TODO(harold): Check to ensure no objc implement-related attributes are applied to the proc group
 		}
-		else if(ac.objc_selector != "") {
-			error(e->token, "@(objc_selector) may only be applied to procedures that are Objective-C implementations or are imported.");
-		}
+
 
 		mutex_lock(&global_type_name_objc_metadata_mutex);
 		defer (mutex_unlock(&global_type_name_objc_metadata_mutex));

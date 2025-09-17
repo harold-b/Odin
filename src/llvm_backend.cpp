@@ -1715,7 +1715,6 @@ gb_internal void lb_finalize_objc_names(lbGenerator *gen, lbProcedure *p) {
 					GB_ASSERT(context_provider);
 
 					// Emit the get odin context call
-
 					get_context_args[0] = lbValue {
 						wrapper_proc->raw_input_parameters[0],
 						contex_provider_self_ptr_type,
@@ -1768,7 +1767,7 @@ gb_internal void lb_finalize_objc_names(lbGenerator *gen, lbProcedure *p) {
 
 			// Add the method to the class
 			String method_encoding = str_lit("v");
-			// TODO (harold): Checker must ensure that objc_methods have a single return value or none!
+			// TODO(harold): Checker must ensure that objc_methods have a single return value or none!
 			GB_ASSERT(method_type->Proc.result_count <= 1);
 			if (method_type->Proc.result_count != 0) {
 				method_encoding = lb_get_objc_type_encoding(method_type->Proc.results->Tuple.variables[0]->type);
@@ -1800,7 +1799,7 @@ gb_internal void lb_finalize_objc_names(lbGenerator *gen, lbProcedure *p) {
 			args[2] = lbValue { wrapper_proc->value, wrapper_proc->type };
 			args[3] = lb_const_value(m, t_cstring, exact_value_string(method_encoding));
 
-			// TODO(harold): Emit check BOOL result and panic if false.
+			// TODO(harold): Emit check BOOL result and panic if false?
 			lb_emit_runtime_call(p, "class_addMethod", args);
 
 		} // End methods

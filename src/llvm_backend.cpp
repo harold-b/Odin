@@ -1720,78 +1720,6 @@ gb_internal void lb_finalize_objc_names(lbGenerator *gen, lbProcedure *p) {
 
 			lb_add_function_type_attributes(wrapper_proc->value, lb_get_function_type(m, wrapper_proc_type), ProcCC_CDecl);
 
-			/// Create raw wrapper function
-			// char *wrapper_c_link_name = alloc_cstring(permanent_allocator(), proc_name);
-			// // LLVMTypeRef func_type = lb_get_procedure_raw_type(m,wrapper_proc_type);
-			// LLVMTypeRef  func_type = nullptr; //lb_get_procedure_raw_type_uncached(m, wrapper_proc_type);
-			// LLVMValueRef raw_wrapper_fn = nullptr;
-			// {
-			// 	Slice<Entity *> wrapper_params = wrapper_args_tuple->Tuple.variables;
-			// 	auto wrapper_raw_params = array_make<LLVMTypeRef>(temporary_allocator());
-			//
-			// 	LLVMTypeRef ret_type = LLVMVoidTypeInContext(m->ctx); // lb_type(m, t_context);
-			//
-			// 	LLVMTypeRef raw_void_ptr = LLVMPointerType(LLVMVoidTypeInContext(m->ctx), 0);
-			// 	array_add(&wrapper_raw_params, raw_void_ptr);
-			//
-			// 	// for (auto* e : wrapper_params) {
-			// 		// array_add(&wrapper_raw_params, lb_type(m, e->type));
-			// 	// }
-			//
-			// 	array_add(&wrapper_raw_params, lb_type(m, t_objc_id));
-			// 	array_add(&wrapper_raw_params, lb_type(m, t_objc_SEL));
-			// 	array_add(&wrapper_raw_params, raw_void_ptr);
-			//
-			// 	// LLVMTypeRef p_ret_type = LLVMPointerType(ret_type, 0);
-			// 	// GB_ASSERT(c == k);
-			//
-			// 	func_type = LLVMFunctionType(ret_type, wrapper_raw_params.data, unsigned(wrapper_raw_params.count), false);
-			// 	raw_wrapper_fn = LLVMAddFunction(m->mod, "Foo_Bar", func_type);
-			// 	LLVMSetFunctionCallConv(raw_wrapper_fn, LLVMCCallConv);
-			// 	LLVMSetDLLStorageClass(raw_wrapper_fn, LLVMDLLExportStorageClass);
-			//
-			// 	LLVMValueRef ret_arg = LLVMGetParam(raw_wrapper_fn, 0);
-			// 	LLVMSetValueName2(ret_arg, "ret_arg", sizeof("ret_arg")-1);
-			//
-			// 	LLVMAttributeRef sret_decl_attr = LLVMCreateTypeAttribute(
-			// 				m->ctx, LLVMGetEnumAttributeKindForName("sret", 4),
-			// 				raw_void_ptr);
-			// 	LLVMAddAttributeAtIndex(raw_wrapper_fn, 1, sret_decl_attr);
-			//
-			// 	// Build
-			// 	LLVMBuilderRef wrapper_builder = LLVMCreateBuilderInContext(m->ctx);
-			// 	defer(LLVMDisposeBuilder(wrapper_builder));
-			//
-			// 	// LLVMBasicBlockRef block = LLVMCreateBasicBlockInContext(m->ctx, "entry");
-			// 	LLVMBasicBlockRef block = LLVMAppendBasicBlockInContext(m->ctx, raw_wrapper_fn, "entry");
-			//
-			// 	LLVMPositionBuilderAtEnd(wrapper_builder, block);
-			//
-			// 	// LLVMAddAttributeAtIndex(method_proc_value.value, 1, sret_attr);
-			// 	// LLVMValueRef callinst = LLVMBuildCall(builder, function, args, num_args, "call_name");
-			//
-			// 	// LLVMAttributeRef sretAttr = LLVMCreateStringAttribute(LLVMGetGlobalContext(), "sret", 0);
-			// 	// LLVMAddInstrAttribute(callinst, 0, sretAttr); // Apply to return index (0)
-			//
-			// 	// LLVMTypeRef fnp = lb_type_internal_for_procedures_raw(m, method_type);
-			//
-			// 	LLVMValueRef raw_args[3] = {
-			// 		ret_arg,
-			// 		LLVMGetParam(raw_wrapper_fn, 1),
-			// 		LLVMGetParam(raw_wrapper_fn, 3),
-			// 	};
-			//
-			// 	lbValue method_proc_value = lb_find_procedure_value_from_entity(m, md.proc_entity);
-			// 	LLVMTypeRef target_method_type = lb_type_internal_for_procedures_raw(m, method_type);
-			// 	LLVMValueRef call_inst = LLVMBuildCall2(wrapper_builder, target_method_type, method_proc_value.value, raw_args, 3, "");
-			//
-			// 	// LLVMAttributeRef sret_attr = LLVMCreateStringAttribute(m->ctx, "sret", 4, "", 0);
-			// 	// LLVMAddCallSiteAttribute(call_inst, 0, sret_attr);
-			//
-			// 	LLVMBuildRetVoid(wrapper_builder);
-			// 	// LLVMBuildBr(wrapper_builder, block);
-			// }
-
 			// Emit the wrapper
 			// LLVMSetLinkage(wrapper_proc->value, LLVMInternalLinkage);
 			LLVMSetDLLStorageClass(wrapper_proc->value, LLVMDLLExportStorageClass);
@@ -1832,31 +1760,13 @@ gb_internal void lb_finalize_objc_names(lbGenerator *gen, lbProcedure *p) {
 				bool has_return = false;
 				lbArgKind return_kind = {};
 
-				// Type *result_type = nullptr;
 				if (wrapper_results_tuple != nullptr) {
 					has_return = true;
 					return_kind = ft->ret.kind;
 
 					if (return_kind == lbArg_Indirect) {
 						method_forward_return_arg_offset = 1;
-
-						LLVMValueRef raw_ret_value = wrapper_proc->return_ptr.addr.value;
-						array_add(&raw_method_args, raw_ret_value);
-
-						// LLVMTypeRef raw_ret_type = LLVMPointerType(LLVMVoidTypeInContext(m->ctx), 0); // LLVMTypeOf(raw_ret_value);
-
-						// LLVMAttributeRef sret_attr = LLVMCreateTypeAttribute(
-						// 	wrapper_proc->module->ctx,
-						// 	LLVMGetEnumAttributeKindForName("sret", 4),
-						// 	raw_ret_type);
-						//
-						// LLVMAttributeRef noalias_attr = LLVMCreateTypeAttribute(
-						// 	wrapper_proc->module->ctx,
-						// 	LLVMGetEnumAttributeKindForName("noalias", 7),
-						// 	raw_ret_type);
-						//
-						// LLVMAddAttributeAtIndex(wrapper_proc->value, 1, sret_attr);
-						// LLVMAddAttributeAtIndex(wrapper_proc->value, 1, noalias_attr);
+						array_add(&raw_method_args, wrapper_proc->return_ptr.addr.value);
 					}
 				}
 
@@ -1868,24 +1778,11 @@ gb_internal void lb_finalize_objc_names(lbGenerator *gen, lbProcedure *p) {
 					array_add(&raw_method_args, wrapper_proc->raw_input_parameters[i+2+method_forward_return_arg_offset]);
 				}
 
-				// lb_add_function_type_attributes(method_proc_value.value, ft, ProcCC_CDecl);
-
 				// Call real procedure for method from here, passing the parameters expected, if any.
 				LLVMTypeRef fnp = lb_type_internal_for_procedures_raw(m, method_type);
 				LLVMValueRef ret_val_raw = LLVMBuildCall2(wrapper_proc->builder, fnp, method_proc_value.value, raw_method_args.data, (unsigned)raw_method_args.count, "");
 
-				// LLVMAttributeRef call_sret_attr = LLVMCreateStringAttribute(wrapper_proc->module->ctx, "sret", 4, "", 0);
-				// LLVMAddCallSiteAttribute(ret_val_raw, 0, call_sret_attr);
-
 				if (has_return && return_kind != lbArg_Indirect) {
-					// auto &result_var = method_type->Proc.results->Tuple.variables[0];
-					// // return_value = lb_emit_conv(wrapper_proc, return_value, result_var->type);
-					// // lb_build_return_stmt_internal(wrapper_proc, return_value, result_var->token.pos);
-					//
-					// lbValue return_value = {};
-					// return_value.value = ret_val_raw;
-					// return_value.type  = result_var->type;
-					// lb_build_return_stmt_internal(wrapper_proc, return_value, result_var->token.pos);
 					LLVMBuildRet(wrapper_proc->builder, ret_val_raw);
 				}
 				else {
@@ -1894,10 +1791,9 @@ gb_internal void lb_finalize_objc_names(lbGenerator *gen, lbProcedure *p) {
 			}
 			lb_end_procedure_body(wrapper_proc);
 
-
 			// Add the method to the class
 			String method_encoding = str_lit("v");
-			// TODO(harold): Checker must ensure that objc_methods have a single return value or none!
+
 			GB_ASSERT(method_type->Proc.result_count <= 1);
 			if (method_type->Proc.result_count != 0) {
 				method_encoding = lb_get_objc_type_encoding(method_type->Proc.results->Tuple.variables[0]->type);

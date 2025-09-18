@@ -253,7 +253,6 @@ void add_objc_proc_type(CheckerContext *c, Ast *call, Type *return_type, Slice<T
 	if (args.count > 0 && args[0]->tav.is_objc_super) {
 		try_to_add_package_dependency(c, "runtime", "objc_msgSendSuper");
 		try_to_add_package_dependency(c, "runtime", "objc_msgSendSuper_stret");
-		try_to_add_package_dependency(c, "runtime", "class_getSuperclass");
 	}
 }
 
@@ -711,20 +710,22 @@ gb_internal bool check_builtin_objc_procedure(CheckerContext *c, Operand *operan
 		}
 
 		call->tav.is_objc_super = true;
-		// operand->expr->tav.is_objc_super = true;
-		// operand->expr->state_flags |= StateFlag_objc_super;
-		// operand->expr->is)
-		// Type *obj_type = type_deref(operand->type);
-		// GB_ASSERT(obj_type->kind == Type_Named);
 
-		// TODO (harold): Remove this! This can't happen, we require in the type itself to emit the right objcSuper call.
-		// If it has a superclass associated with it, set the return value to a
-		// pointer to the superclass. Otherwise, leave it set to itself.
-		// Type *superclass = obj_type->Named.type_name->TypeName.objc_superclass;
-		// if (superclass != nullptr) {
-		// 	GB_ASSERT(is_type_objc_object(superclass));
-		// 	operand->type = alloc_type_pointer(superclass);
-		// }
+		Type *obj_type = type_deref(operand->type);
+		GB_ASSERT(obj_type->kind == Type_Named);
+
+		// The superclass type must be known at compile time.
+		Type *superclass = obj_type->Named.type_name->TypeName.objc_superclass;
+		if (superclass == nullptr) {
+			gbString t = type_to_string(obj_type);
+			error(operand->expr, "'%.*s' target object '%.*s' does not have an Objective-C superclass. One must be set via the @(objc_superclass) attribute", LIT(builtin_name), t);
+			gb_string_free(t);
+			return false;
+		}
+
+		GB_ASSERT(superclass->Named.type_name->TypeName.objc_class_name.len > 0);
+
+		operand->type = alloc_type_pointer(superclass);
 		return true;
 
 	} break;

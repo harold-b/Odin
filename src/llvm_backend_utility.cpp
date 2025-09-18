@@ -2803,17 +2803,22 @@ gb_internal lbValue lb_handle_objc_auto_send(lbProcedure *p, Ast *expr, Slice<lb
 		id = arg_values[0];
 
 		if (is_objc_super) {
+			Type *superclass_type = type_deref(id.type);
+			GB_ASSERT(superclass_type->kind == Type_Named);
 
-			lbValue class_getSuperclass_proc = lb_lookup_runtime_procedure(m, str_lit("class_getSuperclass"));
-			GB_ASSERT(class_getSuperclass_proc.value);
+			lbAddr p_supercls = lb_handle_objc_find_or_register_class(p, superclass_type->Named.type_name->TypeName.objc_class_name, superclass_type->Named.type_name->TypeName.objc_is_implementation ? superclass_type : nullptr);
 
-			Entity *objc_class      = objc_method_ent->Procedure.objc_class;
-			Type   *class_impl_type = objc_class->TypeName.objc_is_implementation ? objc_class->type : nullptr;
+			// lbValue class_getSuperclass_proc = lb_lookup_runtime_procedure(m, str_lit("class_getSuperclass"));
+			// GB_ASSERT(class_getSuperclass_proc.value);
 
-			auto supercls_args = array_make<lbValue>(permanent_allocator(), 1, 1);
-			supercls_args[0] = lb_addr_load(p, lb_handle_objc_find_or_register_class(p, objc_class->TypeName.objc_class_name, class_impl_type));
+			// Entity *objc_class      = objc_method_ent->Procedure.objc_class;
+			// Type   *class_impl_type = objc_class->TypeName.objc_is_implementation ? objc_class->type : nullptr;
 
-			lbValue supercls     = lb_emit_call(p, class_getSuperclass_proc, supercls_args);
+			// auto supercls_args = array_make<lbValue>(permanent_allocator(), 1, 1);
+			// supercls_args[0] = lb_addr_load(p, lb_handle_objc_find_or_register_class(p, objc_class->TypeName.objc_class_name, class_impl_type));
+
+			// lbValue supercls     = lb_emit_call(p, class_getSuperclass_proc, supercls_args);
+			lbValue supercls = lb_addr_load(p, p_supercls);
 			lbAddr  p_objc_super = lb_add_local_generated(p, t_objc_super, false);
 
 			lbValue f_id         = lb_emit_struct_ep(p, p_objc_super.addr, 0);

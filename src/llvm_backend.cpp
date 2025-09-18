@@ -1756,6 +1756,7 @@ gb_internal void lb_finalize_objc_names(lbGenerator *gen, lbProcedure *p) {
 
 			lb_begin_procedure_body(wrapper_proc);
 			{
+				LLVMValueRef context_addr = nullptr;
 				if (method_type->Proc.calling_convention == ProcCC_Odin) {
 					GB_ASSERT(context_provider);
 
@@ -1775,9 +1776,9 @@ gb_internal void lb_finalize_objc_names(lbGenerator *gen, lbProcedure *p) {
 						get_context_args[0] = lb_handle_objc_ivar_for_objc_object_pointer(wrapper_proc, real_self);
 					}
 
-					lbValue context	     = lb_emit_call(wrapper_proc, context_provider_proc_value, get_context_args);
-					lbAddr  context_addr = lb_addr(lb_address_from_load_or_generate_local(wrapper_proc, context));
-					lb_push_context_onto_stack(wrapper_proc, context_addr);
+					lbValue context = lb_emit_call(wrapper_proc, context_provider_proc_value, get_context_args);
+					context_addr    = lb_address_from_load(wrapper_proc, context).value;//lb_address_from_load_or_generate_local(wrapper_proc, context));
+					// context_addr = LLVMGetOperand(context.value, 0);
 				}
 
 				isize method_forward_arg_count = method_param_count + method_param_offset;
@@ -1805,6 +1806,10 @@ gb_internal void lb_finalize_objc_names(lbGenerator *gen, lbProcedure *p) {
 
 				for (isize i = 0; i < method_param_count; i++) {
 					array_add(&raw_method_args, wrapper_proc->raw_input_parameters[i+2+method_forward_return_arg_offset]);
+				}
+
+				if (method_type->Proc.calling_convention == ProcCC_Odin) {
+					array_add(&raw_method_args, context_addr);
 				}
 
 				// Call real procedure for method from here, passing the parameters expected, if any.
@@ -1902,7 +1907,7 @@ gb_internal void lb_finalize_objc_names(lbGenerator *gen, lbProcedure *p) {
 			// Defined in an external package, define it now in the main package
 			LLVMTypeRef t = lb_type(m, t_int);
 
-			lbValue global{};
+			lbValue global = {};
 			global.value = LLVMAddGlobal(m->mod, t, g.global_name);
 			global.type  = t_int_ptr;
 

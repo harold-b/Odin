@@ -2778,6 +2778,8 @@ gb_internal lbValue lb_handle_objc_send(lbProcedure *p, Ast *expr) {
 
 gb_internal lbValue lb_handle_objc_auto_send(lbProcedure *p, Ast *expr, Slice<lbValue> const arg_values) {
 	ast_node(ce, CallExpr, expr);
+// TODO(harold): Remove
+// printf("Emit: 0x%08x\n", expr);
 
 	lbModule *m = p->module;
 	CheckerInfo *info = m->info;

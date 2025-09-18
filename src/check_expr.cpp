@@ -8019,7 +8019,7 @@ void add_objc_proc_type(CheckerContext *c, Ast *call, Type *return_type, Slice<T
 
 gb_internal void check_objc_call_expr(CheckerContext *c, Ast *call, Entity *proc_entity, Type *proc_type) {
 	auto &proc = proc_type->Proc;
-	Slice<Entity *> params = proc.params->Tuple.variables;
+	Slice<Entity *> params = proc.params ? proc.params->Tuple.variables : Slice<Entity *>{};
 
 	Type *self_type = nullptr;
 	isize params_start = 1;
@@ -8052,7 +8052,8 @@ gb_internal void check_objc_call_expr(CheckerContext *c, Ast *call, Entity *proc
 	for (isize i = params_start; i < params.count; i++) {
 		param_types[i+2-params_start] = params[i]->type;
 	}
-
+// TODO(harold): Remove
+// printf("HIT: 0x%08x\n", call);
 	add_objc_proc_type(c, call, proc.result_count == 0 ? nullptr : proc.results->Tuple.variables[0]->type, param_types);
 }
 
@@ -8225,7 +8226,6 @@ gb_internal ExprKind check_call_expr(CheckerContext *c, Operand *operand, Ast *c
 	CHECK_CALL_PARAMETER_MIXTURE_OR_RETURN(operand->mode == Addressing_ProcGroup ? "procedure group call": "procedure call", true);
 
 	Entity *initial_entity = entity_of_node(operand->expr);
-	bool is_objc_call = false;
 
 	if (initial_entity != nullptr && initial_entity->kind == Entity_Procedure) {
 		if (initial_entity->Procedure.deferred_procedure.entity != nullptr) {
@@ -8235,8 +8235,6 @@ gb_internal ExprKind check_call_expr(CheckerContext *c, Operand *operand, Ast *c
 			}
 		}
 		add_entity_use(c, operand->expr, initial_entity);
-
-		is_objc_call = initial_entity->Procedure.is_objc_impl_or_import;
 
 		if (initial_entity->Procedure.entry_point_only) {
 			if (c->curr_proc_decl && c->curr_proc_decl->entity == c->info->entry_point) {
@@ -8412,8 +8410,10 @@ gb_internal ExprKind check_call_expr(CheckerContext *c, Operand *operand, Ast *c
 		}
 	}
 
+	Entity *proc_entity = entity_from_expr(call->CallExpr.proc);
+	bool is_objc_call = proc_entity && proc_entity->kind == Entity_Procedure && proc_entity->Procedure.is_objc_impl_or_import;
 	if (is_objc_call) {
-		check_objc_call_expr(c, call, initial_entity, pt);
+		check_objc_call_expr(c, call, proc_entity, pt);
 	}
 
 	return Expr_Expr;

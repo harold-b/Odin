@@ -1460,7 +1460,10 @@ String lb_get_objc_type_encoding(Type *t, isize pointer_depth = 0) {
 
 struct lbObjCGlobalClass {
 	lbObjCGlobal g;
-	lbValue      class_value;    // Local registered class value
+	union {
+		lbValue      class_value;    // Local registered class value
+		lbAddr       class_global;   // Global class pointer. Placeholder for class implementations which are registered in order of definition.
+	};
 };
 
 gb_internal void lb_register_objc_thing(
@@ -1490,44 +1493,43 @@ gb_internal void lb_register_objc_thing(
 		LLVMSetInitializer(v.value, LLVMConstNull(t));
 	}
 
-	lbValue class_ptr  = {};
-	lbValue class_name = lb_const_value(m, t_cstring, exact_value_string(g.name));
-
 	// If this class requires an implementation, save it for registration below.
 	if (g.class_impl_type != nullptr) {
 
 		// Make sure the superclass has been initialized before us
-		lbValue superclass_value = lb_const_nil(m, t_objc_Class);
-
 		auto &tn = g.class_impl_type->Named.type_name->TypeName;
 		Type *superclass = tn.objc_superclass;
 		if (superclass != nullptr) {
 			auto& superclass_global = string_map_must_get(&class_map, superclass->Named.type_name->TypeName.objc_class_name);
 			lb_register_objc_thing(handled, m, args, class_impls, class_map, p, superclass_global.g, call);
-			GB_ASSERT(superclass_global.class_value.value);
-
-			superclass_value = superclass_global.class_value;
+			GB_ASSERT(superclass_global.class_global.addr.value);
 		}
 
-		args.count = 3;
-		args[0] = superclass_value;
-		args[1] = class_name;
-		args[2] = lb_const_int(m, t_uint, 0);
-		class_ptr = lb_emit_runtime_call(p, "objc_allocateClassPair", args);
+		lbObjCGlobalClass impl_global = {};
+		impl_global.g            = g;
+		impl_global.class_global = addr;
 
-		array_add(&class_impls, lbObjCGlobalClass{g, class_ptr});
+		array_add(&class_impls, impl_global);
+
+		lbObjCGlobalClass* class_global = string_map_get(&class_map, g.name);
+		if (class_global != nullptr) {
+			class_global->class_global = addr;
+		}
 	}
 	else {
+		lbValue class_ptr  = {};
+		lbValue class_name = lb_const_value(m, t_cstring, exact_value_string(g.name));
+
 		args.count = 1;
 		args[0] = class_name;
 		class_ptr = lb_emit_runtime_call(p, call, args);
-	}
 
-	lb_addr_store(p, addr, class_ptr);
+		lb_addr_store(p, addr, class_ptr);
 
-	lbObjCGlobalClass* class_global = string_map_get(&class_map, g.name);
-	if (class_global != nullptr) {
-		class_global->class_value = class_ptr;
+		lbObjCGlobalClass* class_global = string_map_get(&class_map, g.name);
+		if (class_global != nullptr) {
+			class_global->class_value = class_ptr;
+		}
 	}
 }
 
@@ -1590,7 +1592,7 @@ gb_internal void lb_finalize_objc_names(lbGenerator *gen, lbProcedure *p) {
 	string_map_init(&global_class_map, (usize)gen->objc_classes.count);
 	defer (string_map_destroy(&global_class_map));
 
-	for (lbObjCGlobal g :referenced_classes) {
+	for (lbObjCGlobal g : referenced_classes) {
 		string_map_set(&global_class_map, g.name, lbObjCGlobalClass{g});
 	}
 
@@ -1637,9 +1639,36 @@ gb_internal void lb_finalize_objc_names(lbGenerator *gen, lbProcedure *p) {
 
 	for (const auto &cd : class_impls) {
 		auto &g = cd.g;
-		Type *class_type = g.class_impl_type;
+
+		Type *class_type     = g.class_impl_type;
 		Type *class_ptr_type = alloc_type_pointer(class_type);
-		lbValue class_value = cd.class_value;
+
+		// Begin class registration: create class pair and update global reference
+		lbValue class_value = {};
+
+		{
+			lbValue superclass_value = lb_const_nil(m, t_objc_Class);
+
+			auto& tn = class_type->Named.type_name->TypeName;
+			Type *superclass = tn.objc_superclass;
+
+			if (superclass != nullptr) {
+				auto& superclass_global = string_map_must_get(&global_class_map, superclass->Named.type_name->TypeName.objc_class_name);
+				superclass_value = superclass_global.class_value;
+			}
+
+			args.count = 3;
+			args[0] = superclass_value;
+			args[1] = lb_const_value(m, t_cstring, exact_value_string(g.name));
+			args[2] = lb_const_int(m, t_uint, 0);
+			class_value = lb_emit_runtime_call(p, "objc_allocateClassPair", args);
+
+			lbObjCGlobalClass &mapped_global = string_map_must_get(&global_class_map, tn.objc_class_name);
+			lb_addr_store(p, mapped_global.class_global, class_value);
+
+			mapped_global.class_value = class_value;
+		}
+
 
 		Type *ivar_type = class_type->Named.type_name->TypeName.objc_ivar;
 

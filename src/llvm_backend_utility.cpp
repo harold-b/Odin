@@ -2794,7 +2794,7 @@ gb_internal lbValue lb_handle_objc_auto_send(lbProcedure *p, Ast *expr, Slice<lb
 	auto &proc = proc_type->Proc;
 	GB_ASSERT(proc.param_count >= 2);
 
-	bool is_objc_super = ce->args.count > 0 && ce->args[0]->tav.is_objc_super;
+	bool is_objc_super = ce->args.count > 0 && unparen_expr(ce->args[0])->tav.is_objc_super;
 
 	isize arg_offset = 1;
 	lbValue id = {};

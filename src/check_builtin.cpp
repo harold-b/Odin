@@ -253,6 +253,8 @@ void add_objc_proc_type(CheckerContext *c, Ast *call, Type *return_type, Slice<T
 	if (args.count > 0 && args[0]->tav.is_objc_super) {
 		try_to_add_package_dependency(c, "runtime", "objc_msgSendSuper");
 		try_to_add_package_dependency(c, "runtime", "objc_msgSendSuper_stret");
+		// try_to_add_package_dependency(c, "runtime", "objc_msgSendSuper2");
+		// try_to_add_package_dependency(c, "runtime", "objc_msgSendSuper_stret2");
 	}
 }
 
@@ -690,10 +692,10 @@ gb_internal bool check_builtin_objc_procedure(CheckerContext *c, Operand *operan
 	case BuiltinProc_objc_super:
 	{
 		// Must be a pointer to an Objective-C object.
-		Type *objc_class = operand->type;
-		if (!is_type_objc_ptr_to_object(objc_class)) {
+		Type *objc_obj = operand->type;
+		if (!is_type_objc_ptr_to_object(objc_obj)) {
 			gbString e = expr_to_string(operand->expr);
-			gbString t = type_to_string(objc_class);
+			gbString t = type_to_string(objc_obj);
 			error(operand->expr, "'%.*s' expected a pointer to an Objective-C object, but got '%s' of type %s", LIT(builtin_name), e, t);
 			gb_string_free(t);
 			gb_string_free(e);
@@ -709,9 +711,11 @@ gb_internal bool check_builtin_objc_procedure(CheckerContext *c, Operand *operan
 			return false;
 		}
 
+		// TODO(harold): Should we have the original type here so that we can use objc_msgSendSuper2
+		//				 and dynamically lookup the class?. Maybe we can have a different intrinsic variant for that later?
 		call->tav.is_objc_super = true;
 
-		Type *obj_type = type_deref(operand->type);
+		Type *obj_type = type_deref(objc_obj);
 		GB_ASSERT(obj_type->kind == Type_Named);
 
 		// The superclass type must be known at compile time.

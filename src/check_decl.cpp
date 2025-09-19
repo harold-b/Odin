@@ -587,9 +587,7 @@ gb_internal void check_type_decl(CheckerContext *ctx, Entity *e, Ast *init_expr,
 					super = named_type->Named.type_name->TypeName.objc_superclass;
 				}
 			} else {
-				if (ac.objc_superclass != nullptr) {
-					error(e->token, "@(objc_superclass) may only be applied when the @(obj_implement) attribute is also applied");
-				} else if (ac.objc_ivar != nullptr) {
+				if (ac.objc_ivar != nullptr) {
 					error(e->token, "@(objc_ivar) may only be applied when the @(obj_implement) attribute is also applied");
 				} else if (ac.objc_context_provider != nullptr) {
 					error(e->token, "@(objc_context_provider) may only be applied when the @(obj_implement) attribute is also applied");

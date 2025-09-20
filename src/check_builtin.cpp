@@ -253,8 +253,6 @@ void add_objc_proc_type(CheckerContext *c, Ast *call, Type *return_type, Slice<T
 	if (args.count > 0 && args[0]->tav.is_objc_super) {
 		try_to_add_package_dependency(c, "runtime", "objc_msgSendSuper");
 		try_to_add_package_dependency(c, "runtime", "objc_msgSendSuper_stret");
-		// try_to_add_package_dependency(c, "runtime", "objc_msgSendSuper2");
-		// try_to_add_package_dependency(c, "runtime", "objc_msgSendSuper_stret2");
 	}
 }
 

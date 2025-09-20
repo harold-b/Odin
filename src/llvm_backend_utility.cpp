@@ -2373,7 +2373,7 @@ gb_internal lbValue lb_handle_objc_block(lbProcedure *p, Ast *expr) {
 	///       https://www.newosxbook.com/src.php?tree=xnu&file=/libkern/libkern/Block_private.h
 	///       https://github.com/llvm/llvm-project/blob/21f1f9558df3830ffa637def364e3c0cb0dbb3c0/compiler-rt/lib/BlocksRuntime/Block_private.h
 	///       https://github.com/apple-oss-distributions/libclosure/blob/3668b0837f47be3cc1c404fb5e360f4ff178ca13/runtime.cpp
-
+	// TODO(harold): Ensure we don't have any issues with large struct arguments or returns in block wrappers.
 	ast_node(ce, CallExpr, expr);
 	GB_ASSERT(ce->args.count > 0);
 
@@ -2452,7 +2452,9 @@ gb_internal lbValue lb_handle_objc_block(lbProcedure *p, Ast *expr) {
 
 	lbProcedure *invoker_proc = lb_create_dummy_procedure(m, make_string((u8*)block_invoker_name,
 									gb_string_length(block_invoker_name)), invoker_proc_type);
+
 	LLVMSetLinkage(invoker_proc->value, LLVMPrivateLinkage);
+	lb_add_function_type_attributes(invoker_proc->value, lb_get_function_type(m, invoker_proc_type), ProcCC_CDecl);
 
 	// Create the block descriptor and block literal
 	gbString block_lit_type_name = gb_string_make(temporary_allocator(), "__$ObjC_Block_Literal_");
@@ -2531,45 +2533,66 @@ gb_internal lbValue lb_handle_objc_block(lbProcedure *p, Ast *expr) {
 	/// Invoker body
 	lb_begin_procedure_body(invoker_proc);
 	{
-		auto call_args = array_make<lbValue>(temporary_allocator(), user_proc.param_count, user_proc.param_count);
+		// Reserve 2 extra arguments for: Indirect return values and context.
+		auto call_args = array_make<LLVMValueRef>(temporary_allocator(), 0, user_proc.param_count + 2);
 
-		for (isize i = 1; i < invoker_proc->raw_input_parameters.count; i++) {
-			lbValue arg = {};
-			arg.type  = invoker_args[i];
-			arg.value = invoker_proc->raw_input_parameters[i],
-			call_args[i-1] = arg;
+		isize block_literal_arg_index = 0;
+
+		lbFunctionType* user_proc_ft = lb_get_function_type(m, user_proc_value.type);
+
+		lbArgKind return_kind = {};
+
+		GB_ASSERT(user_proc.result_count <= 1);
+		if (user_proc.result_count > 0) {
+			return_kind = user_proc_ft->ret.kind;
+
+			if (return_kind == lbArg_Indirect) {
+				// Forward indirect return value
+				array_add(&call_args, invoker_proc->raw_input_parameters[0]);
+				block_literal_arg_index = 1;
+			}
 		}
 
-		LLVMValueRef block_literal = invoker_proc->raw_input_parameters[0];
+		// Forward raw arguments
+		for (isize i = block_literal_arg_index+1; i < invoker_proc->raw_input_parameters.count; i++) {
+			array_add(&call_args, invoker_proc->raw_input_parameters[i]);
+		}
+
+		LLVMValueRef block_literal = invoker_proc->raw_input_parameters[block_literal_arg_index];
+
+		// Copy capture parameters from the block literal
+		isize capture_arg_in_user_proc_start_index = user_proc_ft->args.count - capture_arg_count;
+		if (user_proc.calling_convention == ProcCC_Odin) {
+			capture_arg_in_user_proc_start_index -= 1;
+		}
+
+		for (isize i = 0; i < capture_arg_count; i++) {
+			LLVMValueRef cap_value = LLVMBuildStructGEP2(invoker_proc->builder, block_lit_type, block_literal, unsigned(capture_fields_offset + i), "");
+
+			// Don't emit load if indirect. Pass the pointer as-is
+			isize cap_arg_index_in_user_proc = capture_arg_in_user_proc_start_index + i;
+
+			if (user_proc_ft->args[cap_arg_index_in_user_proc].kind != lbArg_Indirect) {
+				cap_value = OdinLLVMBuildLoad(invoker_proc, lb_type(invoker_proc->module, captured_values[i].type), cap_value);
+			}
+
+			array_add(&call_args, cap_value);
+		}
 
 		// Push context, if needed
 		if (user_proc.calling_convention == ProcCC_Odin) {
 			LLVMValueRef p_context = LLVMBuildStructGEP2(invoker_proc->builder, block_lit_type, block_literal, 5, "context");
-			lbValue ctx_val = {};
-			ctx_val.type  = t_context_ptr;
-			ctx_val.value = p_context;
-
-			lb_push_context_onto_stack(invoker_proc, lb_addr(ctx_val));
+			array_add(&call_args, p_context);
 		}
 
-		// Copy capture parameters from the block literal
-		for (isize i = 0; i < capture_arg_count; i++) {
-			LLVMValueRef cap_value = LLVMBuildStructGEP2(invoker_proc->builder, block_lit_type, block_literal, unsigned(capture_fields_offset + i), "");
+		LLVMTypeRef  fnp     = lb_type_internal_for_procedures_raw(m, user_proc_value.type);
+		LLVMValueRef ret_val = LLVMBuildCall2(invoker_proc->builder, fnp, user_proc_value.value, call_args.data, (unsigned)call_args.count, "");
 
-			lbValue cap_arg = {};
-			cap_arg.value = cap_value;
-			cap_arg.type  = alloc_type_pointer(captured_values[i].type);
-
-			lbValue arg = lb_emit_load(invoker_proc, cap_arg);
-			call_args[block_forward_args+i] = arg;
+		if (user_proc.result_count > 0 && return_kind != lbArg_Indirect) {
+			LLVMBuildRet(invoker_proc->builder, ret_val);
 		}
-
-		lbValue result = lb_emit_call(invoker_proc, user_proc_value, call_args, proc_lit->ProcLit.inlining);
-
-		GB_ASSERT(user_proc.result_count <= 1);
-		if (user_proc.result_count > 0) {
-			GB_ASSERT(result.value != nullptr);
-			LLVMBuildRet(p->builder, result.value);
+		else {
+			LLVMBuildRetVoid(invoker_proc->builder);
 		}
 	}
 	lb_end_procedure_body(invoker_proc);

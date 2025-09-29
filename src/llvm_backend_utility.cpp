@@ -2610,8 +2610,8 @@ gb_internal lbValue lb_handle_objc_block(lbProcedure *p, Ast *expr) {
 	gbString block_var_name = gb_string_make(temporary_allocator(), "__$objc_block_literal_");
 	block_var_name = gb_string_append_fmt(block_var_name, "%lld", m->objc_next_block_id);
 
-	lbValue result = {};
-	result.type = block_result_type;
+	lbValue block_result = {};
+	block_result.type = block_result_type;
 
 	lbValue isa_val      = lb_find_runtime_value(m, is_global ? str_lit("_NSConcreteGlobalBlock") : str_lit("_NSConcreteStackBlock"));
 	lbValue flags_val    = lb_const_int(m, t_i32, (u64)raw_flags);
@@ -2619,7 +2619,7 @@ gb_internal lbValue lb_handle_objc_block(lbProcedure *p, Ast *expr) {
 
 	if (is_global) {
 		LLVMValueRef p_block_lit = LLVMAddGlobal(m->mod, block_lit_type, block_var_name);
-		result.value = p_block_lit;
+		block_result.value = p_block_lit;
 
 		LLVMValueRef fields_values[5] = {
 			isa_val.value,       // isa
@@ -2634,7 +2634,7 @@ gb_internal lbValue lb_handle_objc_block(lbProcedure *p, Ast *expr) {
 
 	} else {
 		LLVMValueRef p_block_lit = llvm_alloca(p, block_lit_type, lb_alignof(block_lit_type), block_var_name);
-		result.value = p_block_lit;
+		block_result.value = p_block_lit;
 
 		// Initialize it
 		LLVMValueRef f_isa        = LLVMBuildStructGEP2(p->builder, block_lit_type, p_block_lit, 0, "isa");
@@ -2674,7 +2674,11 @@ gb_internal lbValue lb_handle_objc_block(lbProcedure *p, Ast *expr) {
 		}
 	}
 
-	return result;
+	return block_result;
+}
+
+gb_internal lbValue lb_handle_objc_block_invoke(lbProcedure *p, Ast *expr) {
+	return {};
 }
 
 gb_internal lbValue lb_handle_objc_super(lbProcedure *p, Ast *expr) {
@@ -2854,8 +2858,22 @@ gb_internal lbValue lb_handle_objc_auto_send(lbProcedure *p, Ast *expr, Slice<lb
 			id = p_objc_super.addr;
 		}
 	} else {
-		Entity *objc_class      = objc_method_ent->Procedure.objc_class;
-		Type   *class_impl_type = objc_class->TypeName.objc_is_implementation ? objc_class->type : nullptr;
+		Entity *objc_class = objc_method_ent->Procedure.objc_class;
+		if (ce->proc->kind == Ast_SelectorExpr) {
+			// NOTE (harold): If called via a selector expression (ex: Foo.alloc()), then we should use
+			//                the lhs-side to determine the class. This allows for class methods to be called
+			//                with the correct class as the target, even when the method is defined in a superclass.
+			ast_node(se, SelectorExpr, ce->proc);
+			GB_ASSERT(se->expr->tav.mode == Addressing_Type && se->expr->tav.type->kind == Type_Named);
+
+			objc_class = entity_from_expr(se->expr);
+
+			GB_ASSERT(objc_class);
+			GB_ASSERT(objc_class->kind == Entity_TypeName);
+			GB_ASSERT(objc_class->TypeName.objc_class_name != "");
+		}
+
+		Type *class_impl_type = objc_class->TypeName.objc_is_implementation ? objc_class->type : nullptr;
 
 		id = lb_addr_load(p, lb_handle_objc_find_or_register_class(p, objc_class->TypeName.objc_class_name, class_impl_type));
 		arg_offset = 0;

@@ -374,10 +374,11 @@ objc_selector :: struct{}
 objc_class    :: struct{}
 objc_ivar     :: struct{}
 
-objc_id    :: ^objc_object
-objc_SEL   :: ^objc_selector
-objc_Class :: ^objc_class
-objc_Ivar  :: ^objc_ivar
+objc_id           :: ^objc_object
+objc_SEL          :: ^objc_selector
+objc_Class        :: ^objc_class
+objc_Ivar         :: ^objc_ivar
+objc_instancetype :: distinct objc_id
 
 objc_find_selector     :: proc($name: string) -> objc_SEL   ---
 objc_register_selector :: proc($name: string) -> objc_SEL   ---

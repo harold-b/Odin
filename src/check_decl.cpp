@@ -1055,12 +1055,10 @@ gb_internal void check_objc_methods(CheckerContext *ctx, Entity *e, AttributeCon
 			e->Procedure.objc_selector_name     = objc_selector;
 			e->Procedure.objc_class             = tn;
 
+			auto &proc = e->type->Proc;
+			Type *first_param = proc.param_count > 0 ? proc.params->Tuple.variables[0]->type : t_untyped_nil;
+
 			if (implement) {
-				GB_ASSERT(e->kind == Entity_Procedure);
-
-				auto &proc = e->type->Proc;
-				Type *first_param = proc.param_count > 0 ? proc.params->Tuple.variables[0]->type : t_untyped_nil;
-
 				if( !has_body ) {
 					error(e->token, "Procedures with @(objc_is_implement) must have a body");
 				} else if (!tn->TypeName.objc_is_implementation) {
@@ -1076,7 +1074,7 @@ gb_internal void check_objc_methods(CheckerContext *ctx, Entity *e, AttributeCon
 				} else {
 					// Always export unconditionally
 					// NOTE(harold): This means check_objc_methods() MUST be called before
-					//				 e->Procedure.is_export is set in check_proc_decl()!
+					//               e->Procedure.is_export is set in check_proc_decl()!
 					if (ac.is_export) {
 						error(e->token, "Explicit export not allowed when @(objc_implement) is set. It set exported implicitly");
 					}
@@ -1107,17 +1105,30 @@ gb_internal void check_objc_methods(CheckerContext *ctx, Entity *e, AttributeCon
 			} else if (!has_body) {
 				if (ac.objc_selector == "The @(objc_selector) attribute is required for imported Objective-C methods.") {
 					return;
+				} else if (proc.calling_convention != ProcCC_CDecl) {
+					error(e->token, "Imported Objective-C methods must use the \"c\" calling convention");
+					return;
+				} else if (tn->TypeName.objc_context_provider) {
+					error(e->token, "Imported Objective-C class '%.*s' must not declare context providers.", tn->type->Named.name);
+					return;
+				} else if (tn->TypeName.objc_is_implementation) {
+					error(e->token, "Imported Objective-C methods used in a class with @(objc_implement) is not allowed.");
+					return;
+				} else if (!ac.objc_is_class_method && !(first_param->kind == Type_Pointer && internal_check_is_assignable_to(t, first_param->Pointer.elem))) {
+					error(e->token, "Objective-C instance methods require the first parameter to be a pointer to the class type set by @(objc_type)");
+					return;
 				}
-
-				// TODO(harold): Check calling conv?? Must be C
-				// TODO(harold): Cannot have attributes pertaining to implementations
 			}
 			else if(ac.objc_selector != "") {
-				error(e->token, "@(objc_selector) may only be applied to procedures that are Objective-C implementations or are imported.");
+				error(e->token, "@(objc_selector) may only be applied to procedures that are Objective-C method implementations or are imported.");
+				return;
 			}
 		} else {
 			GB_ASSERT(e->kind == Entity_ProcGroup);
-			// TODO(harold): Check to ensure no objc implement-related attributes are applied to the proc group
+			if (tn->TypeName.objc_is_implementation) {
+				error(e->token, "Objective-C procedure groups cannot use the @(objc_implement) attribute.");
+				return;
+			}
 		}
 
 

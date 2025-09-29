@@ -1404,6 +1404,8 @@ gb_internal void init_universal(void) {
 		t_objc_SEL      = alloc_type_pointer(t_objc_selector);
 		t_objc_Class    = alloc_type_pointer(t_objc_class);
 		t_objc_Ivar     = alloc_type_pointer(t_objc_ivar);
+
+		t_objc_instancetype = add_global_type_name(intrinsics_pkg->scope, str_lit("objc_instancetype"), t_objc_id);
 	}
 }
 

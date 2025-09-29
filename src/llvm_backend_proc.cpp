@@ -4106,11 +4106,6 @@ gb_internal void lb_add_values_to_array(lbProcedure *p, Array<lbValue> *args, lb
 	}
 }
 
-gb_internal lbValue lb_emit_objc_call(lbProcedure *p, Ast *expr, Array<lbValue> const &args) {
-	// TODO(harold): Remove this wrapper func and go directly to lb_handle_objc_auto_send
-	return lb_handle_objc_auto_send(p, expr, slice(args, 0, args.count));
-}
-
 gb_internal lbValue lb_build_call_expr_internal(lbProcedure *p, Ast *expr) {
 	lbModule *m = p->module;
 
@@ -4415,7 +4410,7 @@ gb_internal lbValue lb_build_call_expr_internal(lbProcedure *p, Ast *expr) {
 	auto call_args = array_slice(args, 0, final_count);
 
 	if (is_objc_call) {
-		return lb_emit_objc_call(p, expr, call_args);
+		return lb_handle_objc_auto_send(p, expr, slice(call_args, 0, call_args.count));
 	}
 
 	return lb_emit_call(p, value, call_args, ce->inlining);

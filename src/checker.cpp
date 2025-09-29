@@ -1489,7 +1489,7 @@ gb_internal void destroy_checker_info(CheckerInfo *i) {
 
 	map_destroy(&i->objc_msgSend_types);
 	string_set_destroy(&i->obcj_class_name_set);
-	// mpsc_destroy(&i->objc_class_implementations);	// TODO(harold): Why is this crashing?
+	mpsc_destroy(&i->objc_class_implementations);
 	map_destroy(&i->objc_method_implementations);
 
 	string_map_destroy(&i->load_file_cache);

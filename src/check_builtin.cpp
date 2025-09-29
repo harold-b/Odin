@@ -250,9 +250,9 @@ void add_objc_proc_type(CheckerContext *c, Ast *call, Type *return_type, Slice<T
 	try_to_add_package_dependency(c, "runtime", "objc_msgSend_stret");
 
 	Slice<Ast *> args = call->CallExpr.args;
-	if (args.count > 0 && args[0]->tav.is_objc_super) {
-		try_to_add_package_dependency(c, "runtime", "objc_msgSendSuper");
-		try_to_add_package_dependency(c, "runtime", "objc_msgSendSuper_stret");
+	if (args.count > 0 && args[0]->tav.objc_super_target) {
+		try_to_add_package_dependency(c, "runtime", "objc_msgSendSuper2");
+		try_to_add_package_dependency(c, "runtime", "objc_msgSendSuper2_stret");
 	}
 }
 
@@ -709,14 +709,15 @@ gb_internal bool check_builtin_objc_procedure(CheckerContext *c, Operand *operan
 			return false;
 		}
 
-		// TODO(harold): Should we have the original type here so that we can use objc_msgSendSuper2
-		//				 and dynamically lookup the class?. Maybe we can have a different intrinsic variant for that later?
-		call->tav.is_objc_super = true;
-
 		Type *obj_type = type_deref(objc_obj);
 		GB_ASSERT(obj_type->kind == Type_Named);
 
-		// The superclass type must be known at compile time.
+		// NOTE(harold) Track original type before transforming it to the superclass.
+		//              This is needed because objc_msgSendSuper2 must start its search on the subclass, not the superclass.
+		call->tav.objc_super_target = obj_type;
+
+		// The superclass type must be known at compile time. We require this so that the selector method expressions
+		// methods are resolved to the superclass's methods instead of the subclass's.
 		Type *superclass = obj_type->Named.type_name->TypeName.objc_superclass;
 		if (superclass == nullptr) {
 			gbString t = type_to_string(obj_type);

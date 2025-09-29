@@ -29,8 +29,8 @@ foreign ObjC {
 	objc_msgSend_fpret       :: proc "c" (self: objc_id, op: objc_SEL, #c_vararg args: ..any) -> f64 ---
 	objc_msgSend_fp2ret      :: proc "c" (self: objc_id, op: objc_SEL, #c_vararg args: ..any) -> complex128 ---
 	objc_msgSend_stret       :: proc "c" (self: objc_id, op: objc_SEL, #c_vararg args: ..any) ---
-	objc_msgSendSuper        :: proc "c" (super: ^objc_super, op: objc_SEL, #c_vararg args: ..any) ---
-	objc_msgSendSuper_stret  :: proc "c" (super: ^objc_super, op: objc_SEL, #c_vararg args: ..any) ---
+	objc_msgSendSuper2       :: proc "c" (super: ^objc_super, op: objc_SEL, #c_vararg args: ..any) ---
+	objc_msgSendSuper2_stret :: proc "c" (super: ^objc_super, op: objc_SEL, #c_vararg args: ..any) ---
 
 
 	objc_lookUpClass          :: proc "c" (name: cstring) -> objc_Class ---

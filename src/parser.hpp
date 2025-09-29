@@ -30,8 +30,8 @@ enum AddressingMode : u8 {
 struct TypeAndValue {
 	Type *         type;
 	AddressingMode mode;
-	bool           is_lhs; // Debug info
-	bool           is_objc_super;
+	bool           is_lhs;            // Debug info
+	Type *         objc_super_target; // Original type of the Obj-C object before being converted to the superclass' type by the objc_super() intrinsic.
 	ExactValue     value;
 };
 

@@ -2821,7 +2821,10 @@ gb_internal lbValue lb_handle_objc_auto_send(lbProcedure *p, Ast *expr, Slice<lb
 	auto &proc = proc_type->Proc;
 	GB_ASSERT(proc.param_count >= 2);
 
-	bool is_objc_super = ce->args.count > 0 && unparen_expr(ce->args[0])->tav.is_objc_super;
+	Type *objc_super_orig_type = nullptr;
+	if (ce->args.count > 0) {
+		objc_super_orig_type = unparen_expr(ce->args[0])->tav.objc_super_target;
+	}
 
 	isize arg_offset = 1;
 	lbValue id = {};
@@ -2829,22 +2832,12 @@ gb_internal lbValue lb_handle_objc_auto_send(lbProcedure *p, Ast *expr, Slice<lb
 		GB_ASSERT(ce->args.count > 0);
 		id = arg_values[0];
 
-		if (is_objc_super) {
-			Type *superclass_type = type_deref(id.type);
-			GB_ASSERT(superclass_type->kind == Type_Named);
+		if (objc_super_orig_type) {
+			GB_ASSERT(objc_super_orig_type->kind == Type_Named);
 
-			lbAddr p_supercls = lb_handle_objc_find_or_register_class(p, superclass_type->Named.type_name->TypeName.objc_class_name, superclass_type->Named.type_name->TypeName.objc_is_implementation ? superclass_type : nullptr);
+			auto& tn = objc_super_orig_type->Named.type_name->TypeName;
+			lbAddr p_supercls = lb_handle_objc_find_or_register_class(p, tn.objc_class_name, tn.objc_is_implementation ? objc_super_orig_type : nullptr);
 
-			// lbValue class_getSuperclass_proc = lb_lookup_runtime_procedure(m, str_lit("class_getSuperclass"));
-			// GB_ASSERT(class_getSuperclass_proc.value);
-
-			// Entity *objc_class      = objc_method_ent->Procedure.objc_class;
-			// Type   *class_impl_type = objc_class->TypeName.objc_is_implementation ? objc_class->type : nullptr;
-
-			// auto supercls_args = array_make<lbValue>(permanent_allocator(), 1, 1);
-			// supercls_args[0] = lb_addr_load(p, lb_handle_objc_find_or_register_class(p, objc_class->TypeName.objc_class_name, class_impl_type));
-
-			// lbValue supercls     = lb_emit_call(p, class_getSuperclass_proc, supercls_args);
 			lbValue supercls     = lb_addr_load(p, p_supercls);
 			lbAddr  p_objc_super = lb_add_local_generated(p, t_objc_super, false);
 
@@ -2892,7 +2885,7 @@ gb_internal lbValue lb_handle_objc_auto_send(lbProcedure *p, Ast *expr, Slice<lb
 
 	lbValue the_proc = {};
 
-	if (!is_objc_super) {
+	if (!objc_super_orig_type) {
 		switch (data.kind) {
 			default:
 				GB_PANIC("unhandled ObjcMsgKind %u", data.kind);
@@ -2910,10 +2903,10 @@ gb_internal lbValue lb_handle_objc_auto_send(lbProcedure *p, Ast *expr, Slice<lb
 			case ObjcMsg_normal:
 			case ObjcMsg_fpret:
 			case ObjcMsg_fp2ret:
-				the_proc = lb_lookup_runtime_procedure(m, str_lit("objc_msgSendSuper"));
+				the_proc = lb_lookup_runtime_procedure(m, str_lit("objc_msgSendSuper2"));
 				break;
 			case ObjcMsg_stret:
-				the_proc = lb_lookup_runtime_procedure(m, str_lit("objc_msgSendSuper_stret"));
+				the_proc = lb_lookup_runtime_procedure(m, str_lit("objc_msgSendSuper2_stret"));
 				break;
 		}
 	}

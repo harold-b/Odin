@@ -2206,6 +2206,11 @@ gb_internal void lb_create_global_procedures_and_types(lbGenerator *gen, Checker
 		GB_ASSERT(m != nullptr);
 
 		if (e->kind == Entity_Procedure) {
+			if (e->Procedure.is_foreign && e->Procedure.is_objc_impl_or_import) {
+				// Do not generate declarations for foreign Objective-C methods. These are called indirectly through the Objective-C runtime.
+				continue;
+			}
+
 			array_add(&m->global_procedures_to_create, e);
 		} else if (e->kind == Entity_TypeName) {
 			array_add(&m->global_types_to_create, e);
